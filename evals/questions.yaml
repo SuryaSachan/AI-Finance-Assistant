@@ -1,0 +1,191 @@
+# Accuracy benchmark for the Finance Assistant.
+#
+# Each case pairs a natural-language question with ground-truth SQL that is run
+# directly against DuckDB. The assistant passes only if the number it reports
+# matches the ground truth (and, where stated, if it picked the right dataset /
+# intent / filters).
+#
+# Placeholders available in expect_sql:
+#   {anchor} {lm_start} {lm_end} {pm_start} {pm_end} {ytd_start} {year}
+
+- id: q01
+  question: How much did we spend on vendor payouts last month?
+  dataset: vendor_payouts
+  intent: aggregate
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_vendor_payouts
+    WHERE payout_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q02
+  question: Which transactions are still unreconciled?
+  dataset: transactions
+  intent: list
+  must_filter: [reconciliation_status=unreconciled]
+  check: count
+  expect_sql: >
+    SELECT count(*) FROM v_transactions WHERE reconciliation_status = 'unreconciled'
+
+- id: q03
+  question: What was our total spend last month?
+  session: s1
+  dataset: transactions
+  intent: aggregate
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE direction = 'debit' AND status <> 'void'
+      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q04
+  question: How does that compare to the month before?
+  session: s1
+  after: q03
+  dataset: transactions
+  check: comparison_previous
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE direction = 'debit' AND status <> 'void'
+      AND txn_date BETWEEN DATE '{pm_start}' AND DATE '{pm_end}'
+
+- id: q05
+  question: Show me the top 5 vendors by spend this year
+  dataset: transactions
+  intent: aggregate
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE direction = 'debit' AND status <> 'void'
+      AND txn_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
+
+- id: q06
+  question: How many payouts are still pending?
+  dataset: vendor_payouts
+  must_filter: [status=pending]
+  check: count
+  expect_sql: >
+    SELECT count(*) FROM v_vendor_payouts WHERE status = 'pending'
+
+- id: q07
+  question: How much did we spend on Cloud & Hosting last month?
+  dataset: transactions
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE direction = 'debit' AND status <> 'void' AND category = 'Cloud & Hosting'
+      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q08
+  question: What is the total value of unreconciled transactions last month?
+  dataset: transactions
+  must_filter: [reconciliation_status=unreconciled]
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE reconciliation_status = 'unreconciled' AND status <> 'void'
+      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q09
+  question: Break down spend by department last month
+  dataset: transactions
+  intent: aggregate
+  group_by: [department]
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE direction = 'debit' AND status <> 'void'
+      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q10
+  question: Show marketing spend by month year to date
+  dataset: transactions
+  intent: trend
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE direction = 'debit' AND status <> 'void' AND category = 'Marketing'
+      AND txn_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
+
+- id: q11
+  question: How much did we pay Acme Software last month?
+  dataset: transactions
+  must_filter: [vendor_name=Acme Software]
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE direction = 'debit' AND status <> 'void' AND vendor_name = 'Acme Software'
+      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q12
+  question: How many transactions were disputed last month?
+  dataset: transactions
+  must_filter: [reconciliation_status=disputed]
+  check: count
+  expect_sql: >
+    SELECT count(*) FROM v_transactions
+    WHERE reconciliation_status = 'disputed' AND status <> 'void'
+      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q13
+  question: What was the average transaction amount last month?
+  dataset: transactions
+  check: value
+  expect_sql: >
+    SELECT avg(amount) FROM v_transactions
+    WHERE status <> 'void'
+      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q14
+  question: List unmatched bank statement lines
+  dataset: bank_lines
+  intent: list
+  must_filter: [match_status=unmatched]
+  check: count
+  expect_sql: >
+    SELECT count(*) FROM v_bank_lines WHERE match_status = 'unmatched'
+
+- id: q15
+  question: Total vendor payouts year to date
+  dataset: vendor_payouts
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_vendor_payouts
+    WHERE payout_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
+
+- id: q16
+  question: Which vendors did we spend the most with last month?
+  dataset: transactions
+  group_by: [vendor_name]
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE direction = 'debit' AND status <> 'void'
+      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q17
+  question: How much revenue did we book last month?
+  dataset: transactions
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE direction = 'credit' AND status <> 'void'
+      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q18
+  question: How much did we spend with Globex Corporation last month?
+  expect_refusal: true
+  note: Globex Corporation is not in the vendor list; the assistant must refuse.
+
+- id: q19
+  question: What will our spend be next quarter?
+  expect_refusal: true
+  note: Forecasting is outside the dataset; the assistant must not invent a number.
+
+- id: q20
+  question: Show payouts that failed this year
+  dataset: vendor_payouts
+  must_filter: [status=failed]
+  check: count
+  expect_sql: >
+    SELECT count(*) FROM v_vendor_payouts
+    WHERE status = 'failed' AND payout_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'

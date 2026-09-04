@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Finance Assistant</title>
+<link rel="stylesheet" href="/static/styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💵</text></svg>" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">FA</div>
+      <div>
+        <h1>Finance Assistant</h1>
+        <p id="company">grounded answers from your ledger</p>
+      </div>
+    </div>
+
+    <section class="panel" id="status-panel">
+      <h2>System</h2>
+      <div class="status-row"><span>Data</span><b id="st-data">checking…</b></div>
+      <div class="status-row"><span>Records</span><b id="st-records">–</b></div>
+      <div class="status-row"><span>Coverage</span><b id="st-span">–</b></div>
+      <div class="status-row"><span>Model</span><b id="st-model">–</b></div>
+      <div class="status-row"><span>Mode</span><b id="st-mode">–</b></div>
+    </section>
+
+    <section class="panel">
+      <h2>Try asking</h2>
+      <div id="samples" class="chips"></div>
+    </section>
+
+    <section class="panel grow">
+      <h2>Guarantees</h2>
+      <ul class="guarantees">
+        <li>Numbers are computed in SQL, never by the model</li>
+        <li>Every reply is number-verified before display</li>
+        <li>No matching data → it says so, it does not guess</li>
+      </ul>
+    </section>
+
+    <button id="reset" class="ghost">New conversation</button>
+  </aside>
+
+  <main class="chat">
+    <div id="messages" class="messages"></div>
+    <form id="composer" class="composer" autocomplete="off">
+      <input id="q" type="text" placeholder="e.g. How much did we spend on vendor payouts last month?" />
+      <button type="submit" id="send">Ask</button>
+    </form>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
