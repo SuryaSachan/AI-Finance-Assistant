@@ -103,6 +103,29 @@ def ask(question: str, session_id: str | None = None) -> dict:
         return _refusal(session, question, text, "unsupported", usage,
                         ["The question cannot be answered from the available schema."])
 
+    # ── Out-of-range period guardrail ─────────────────────────────────────────
+    # Resolve the period here (before running the executor) so we can tell the
+    # user exactly what years the dataset covers rather than returning an
+    # opaque "no data" result for a year that cannot possibly have records.
+    try:
+        _data_lo, _data_hi = db.data_span()
+        _anchor = db.anchor_date()
+        _p_start, _p_end, _p_label = periods.resolve(
+            plan.period.model_dump() if plan.period else None, _anchor
+        )
+        if _p_start and _p_end and (_p_end < _data_lo or _p_start > _data_hi):
+            text = (
+                f"I only have data from {_data_lo.strftime('%d %B %Y')} to "
+                f"{_data_hi.strftime('%d %B %Y')}. "
+                f"The period you requested ({_p_label}) falls entirely outside that range, "
+                f"so there are no records to return. Please ask about a period within that window."
+            )
+            return _refusal(session, question, text, "no_data", usage,
+                            [f"Period '{_p_label}' is outside dataset range "
+                             f"{_data_lo.isoformat()} – {_data_hi.isoformat()}."])
+    except periods.PeriodError:
+        pass  # let the executor surface the error with its own message
+
     try:
         ex = executor.run(plan)
     except (PlanError, periods.PeriodError) as exc:

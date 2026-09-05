@@ -25,11 +25,11 @@ from .plan_models import Filter, Metric, Period, QueryPlan, Sort
 from .schema_catalog import BANK_CODES, DATASETS, schema_prompt
 
 SPEND_WORDS = re.compile(
-    r"\b(spend|spent|spending|expense|expenses|cost|costs|paid|pay|payment|payout|payouts|"
+    r"\b(spend|spent|spending|expense|expenses|expenditures?|cost|costs|paid|pay|payments?|payout|payouts|"
     r"outflow|debit|debits|withdraw\w*|disburse\w*|transfer(red)? out)\b", re.I
 )
 INCOME_WORDS = re.compile(
-    r"\b(revenue|income|receipt|receipts|receiv\w*|inflow|collect\w*|credit|credits|deposit\w*|settle\w*)\b", re.I
+    r"\b(revenue|income|receipt|receipts|receiv\w*|inflow|collect\w*|credit|credits|deposit\w*|settle\w*|cam[e]?\s+in|come[s]?\s+in|money\s+in)\b", re.I
 )
 LIST_WORDS = re.compile(r"\b(list|show|which|what are|give me|display|find|see)\b", re.I)
 TREND_WORDS = re.compile(r"\b(trend|over time|by month|monthly|month by month|each month|per month)\b", re.I)
@@ -77,6 +77,8 @@ PHRASE_STOPWORDS = {
     "to", "from", "with", "for", "in", "on", "of", "and", "or", "is", "are", "be", "month",
     "months", "year", "years", "quarter", "day", "days", "week", "transaction", "transactions",
     "money", "amount", "value", "over", "across", "still", "break", "down", "compare", "average",
+    # Channel names — prevent them from being mistaken for counterparty names
+    "upi", "neft", "imps", "rtgs", "cheque", "check", "ach", "nach", "atm", "charges",
 }
 
 SYSTEM_PROMPT = """You translate finance questions into a JSON query plan.
@@ -111,7 +113,8 @@ RULES
 - **SECURITY**: If the user asks to unmask, decrypt, or show raw full account numbers, UTRs, or passwords, use intent "unsupported" and put a security refusal in "clarification".
 - If the question needs a field that is not listed in the schema, use intent "unsupported".
 - If it is genuinely ambiguous, use intent "clarify" and put the question in "clarification".
-- A follow-up question inherits filters/period from previous_plan unless it overrides them.
+- A follow-up question inherits the debit/credit direction from previous_plan unless it overrides them. Do NOT inherit account_id or account_number_masked filters unless the user explicitly mentions an account number.
+- **NEVER use raw transaction_date filters to represent a year, month, or quarter. Always encode time ranges in the period object** (e.g. period.kind="year" with period.value=2025, NOT filters with field="transaction_date").
 - Output ONLY the JSON object.
 
 EXAMPLES
@@ -253,6 +256,9 @@ def apply_business_defaults(plan: QueryPlan, question: str) -> list[str]:
     if any(f.field == "counterparty" for f in plan.filters) or "counterparty" in plan.group_by:
         notes.append("Counterparty names are parsed out of the free-text bank narration.")
 
+    if plan.period and getattr(plan.period, "exclude_weekends", False):
+        notes.append("Excluded weekend transactions (Saturday & Sunday); computed for weekdays only.")
+
     for m in plan.metrics:
         if m.agg != "count" and m.field not in ds.field_map:
             m.field = ds.amount_field
@@ -262,37 +268,52 @@ def apply_business_defaults(plan: QueryPlan, question: str) -> list[str]:
 # ------------------------------------------------------------- rule-based tier
 def _detect_period(q: str) -> Period | None:
     ql = q.lower()
-    if re.search(r"\blast month\b|\bprevious month\b|\bprior month\b", ql):
-        return Period(kind="last_month")
-    if re.search(r"\bthis month\b|\bcurrent month\b|\bmonth to date\b|\bmtd\b", ql):
-        return Period(kind="this_month")
-    if re.search(r"\blast quarter\b|\bprevious quarter\b", ql):
-        return Period(kind="last_quarter")
-    if re.search(r"\bthis quarter\b|\bqtd\b", ql):
-        return Period(kind="this_quarter")
-    if re.search(r"\b(ytd|year to date|this year)\b", ql):
-        return Period(kind="ytd")
-    if re.search(r"\blast year\b|\bprevious year\b", ql):
-        return Period(kind="last_year")
-    m = re.search(r"\blast (\d+)\s*days?\b", ql)
-    if m:
-        return Period(kind="last_n_days", n=int(m.group(1)))
-    m = re.search(r"\blast (\d+)\s*months?\b", ql)
-    if m:
-        return Period(kind="last_n_months", n=int(m.group(1)))
-    m = re.search(r"\b(q[1-4])\s*(\d{4})?\b", ql)
-    if m:
-        return Period(kind="quarter", value=f"{m.group(2) or ''}-{m.group(1)}".strip("-").upper())
-    m = re.search(
-        r"\b(january|february|march|april|may|june|july|august|september|october|november|december"
-        r"|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b\.?\s*(\d{4})?",
-        ql,
+    exclude_weekends = bool(
+        re.search(r"\b(without|exclude|excluding|no)\s+(week-?ends?|weends?)\b|\b(weekdays|business days)\s+only\b", ql)
     )
-    if m:
-        return Period(kind="month", value=f"{m.group(1)} {m.group(2) or ''}".strip())
-    m = re.search(r"\b(20\d{2})\b", ql)
-    if m:
-        return Period(kind="year", value=m.group(1))
+    p: Period | None = None
+    if re.search(r"\blast month\b|\bprevious month\b|\bprior month\b", ql):
+        p = Period(kind="last_month")
+    elif re.search(r"\bthis month\b|\bcurrent month\b|\bmonth to date\b|\bmtd\b", ql):
+        p = Period(kind="this_month")
+    elif re.search(r"\blast quarter\b|\bprevious quarter\b", ql):
+        p = Period(kind="last_quarter")
+    elif re.search(r"\bthis quarter\b|\bqtd\b", ql):
+        p = Period(kind="this_quarter")
+    elif re.search(r"\b(ytd|year to date|this year)\b", ql):
+        p = Period(kind="ytd")
+    elif re.search(r"\blast year\b|\bprevious year\b", ql):
+        p = Period(kind="last_year")
+    else:
+        m = re.search(r"\blast (\d+)\s*days?\b", ql)
+        if m:
+            p = Period(kind="last_n_days", n=int(m.group(1)))
+        else:
+            m = re.search(r"\blast (\d+)\s*months?\b", ql)
+            if m:
+                p = Period(kind="last_n_months", n=int(m.group(1)))
+            else:
+                m = re.search(r"\b(q[1-4])\s*(\d{4})?\b", ql)
+                if m:
+                    p = Period(kind="quarter", value=f"{m.group(2) or ''}-{m.group(1)}".strip("-").upper())
+                else:
+                    m = re.search(
+                        r"\b(january|february|march|april|may|june|july|august|september|october|november|december"
+                        r"|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b\.?\s*(\d{4})?",
+                        ql,
+                    )
+                    if m:
+                        p = Period(kind="month", value=f"{m.group(1)} {m.group(2) or ''}".strip())
+                    else:
+                        m = re.search(r"\b(20\d{2})\b", ql)
+                        if m:
+                            p = Period(kind="year", value=m.group(1))
+
+    if p:
+        p.exclude_weekends = exclude_weekends
+        return p
+    if exclude_weekends:
+        return Period(kind="all", exclude_weekends=True)
     return None
 
 
@@ -353,9 +374,23 @@ def rule_plan(question: str, previous: QueryPlan | None = None) -> QueryPlan:
         
     # Explicitly catch privacy/PII abuse requests so the rule parser doesn't
     # fallback to a default sum.
-    if re.search(r"\b(unmask\w*|full account|exact account|raw account|real account|decrypt\w*)\b", ql):
+    if re.search(r"\b(unmask\w*|full account|exact account|raw account|real account|decrypt\w*"
+                 r"|utr[_ ]?numbers?|utr[_ ]?details?|show.{0,20}utrs?|\butrs?\b"
+                 r"|password\w*|credential\w*|secret[_ ]?key)\b", ql):
         plan.intent = "unsupported"
         plan.clarification = "For security reasons, I do not have access to full, unmasked account numbers or UTRs. All sensitive data is encrypted at rest and masked in memory."
+        return plan
+
+    # Catch social-engineering attempts referencing non-existent tables/concepts.
+    if re.search(r"\b(pretend|imagine|assume|act as if|suppose).{0,40}(table|database|column|schema|password|secret)\b", ql):
+        plan.intent = "unsupported"
+        plan.clarification = "I can only query the datasets defined in this system. I cannot access or simulate other tables or schemas."
+        return plan
+
+    # Catch raw SQL keywords that indicate injection or abuse attempts.
+    if re.search(r"\b(DROP\s+TABLE|DELETE\s+FROM|INSERT\s+INTO|ALTER\s+TABLE|TRUNCATE|UPDATE\s+\w+\s+SET)\b", ql, re.I):
+        plan.intent = "unsupported"
+        plan.clarification = "That looks like a database command rather than a question. I only answer natural-language questions about the finance data."
         return plan
 
     if BALANCE_WORDS.search(ql):
@@ -386,6 +421,10 @@ def rule_plan(question: str, previous: QueryPlan | None = None) -> QueryPlan:
         plan.metrics = [Metric(agg="count", field=ds.amount_field)]
     elif AVG_WORDS.search(ql):
         plan.metrics = [Metric(agg="avg", field=ds.amount_field)]
+    elif BOTTOM_WORDS.search(ql) and not plan.group_by:
+        plan.metrics = [Metric(agg="min", field=ds.amount_field)]
+    elif re.search(r"\b(largest|biggest|maximum|max|highest)\b", ql) and not plan.group_by:
+        plan.metrics = [Metric(agg="max", field=ds.amount_field)]
     else:
         plan.metrics = [Metric(agg="sum", field=ds.amount_field)]
 
@@ -412,11 +451,31 @@ def rule_plan(question: str, previous: QueryPlan | None = None) -> QueryPlan:
 
     # a follow-up keeps the previous direction framing unless it restates it
     restates_direction = bool(SPEND_WORDS.search(ql) or INCOME_WORDS.search(ql))
+
+    # Guard: strip low-level internal IDs (account_id) that were silently inherited
+    # from the previous plan unless the user's new question explicitly mentions an
+    # account identifier. A UUID like 00000000-0000-4000-8000-... is never user-visible
+    # and must not ghost-filter a completely different question such as "get me data from 2022".
+    _mentions_acct = bool(re.search(r"\baccount\b.{0,20}\d{4}|xxxxxx\d{4}\b", ql, re.I))
     plan.filters = [
         f
         for f in plan.filters
-        if f.field in ds.field_map and not (restates_direction and f.field == "transaction_type")
+        if f.field in ds.field_map
+        and not (restates_direction and f.field == "transaction_type")
+        and not (f.field == "account_id" and not _mentions_acct)
     ]
+
+    # If the period changed from the previous turn, also drop the account_number_masked
+    # scope unless the new question explicitly restates an account identifier.
+    if previous and previous.period and plan.period:
+        _period_changed = (
+            plan.period.kind != previous.period.kind
+            or getattr(plan.period, "value", None) != getattr(previous.period, "value", None)
+            or getattr(plan.period, "n", None) != getattr(previous.period, "n", None)
+        )
+        if _period_changed and not _mentions_acct:
+            plan.filters = [f for f in plan.filters if f.field != "account_number_masked"]
+
 
     if "reconciliation_status" in ds.field_map:
         if re.search(r"\bunreconcil|not reconciled|unmatched|outstanding reconcil|no reference|missing reference", ql):
@@ -456,6 +515,14 @@ def rule_plan(question: str, previous: QueryPlan | None = None) -> QueryPlan:
     m = re.search(r"\bprogram\s*(?:id\s*)?(\d+)\b", residual)
     if m and "program_id" in ds.field_map:
         plan.filters.append(Filter(field="program_id", op="eq", value=int(m.group(1))))
+
+    m = re.search(r"\baccount\s*(?:number\s*|no\.?\s*|ending\s+(?:in\s+)?)?([xX*]*\d{4,})\b", residual)
+    if m and "account_number_masked" in ds.field_map:
+        val = m.group(1).upper()
+        if not val.startswith("XXXXXX") and len(val) == 4:
+            val = f"XXXXXX{val}"
+        plan.filters = [f for f in plan.filters if f.field != "account_number_masked"]
+        plan.filters.append(Filter(field="account_number_masked", op="contains" if len(val) < 10 else "eq", value=val))
 
     if plan.intent == "list":
         plan.limit = max(plan.limit, 25)
@@ -505,6 +572,54 @@ def make_plan(
         plan = rule_plan(question, previous_plan)
         validate(plan)
         source = "rules"
+
+    # 1. Remove raw transaction_date filters that duplicate (or conflict with) the
+    #    period object. The LLM sometimes emits both period.kind="year" AND raw
+    #    transaction_date gte/lte filters — the period wins; the filters are redundant
+    #    and cause issues when the period is out-of-range (the filters confuse the SQL).
+    _txn_date_gt = next((f for f in plan.filters if f.field == "transaction_date" and f.op in ("gt", "gte")), None)
+    _txn_date_lt = next((f for f in plan.filters if f.field == "transaction_date" and f.op in ("lt", "lte")), None)
+    if _txn_date_gt or _txn_date_lt:
+        if plan.period and plan.period.kind not in ("all", ""):
+            # Period is already explicitly set — drop the raw date filters entirely.
+            plan.filters = [f for f in plan.filters if f.field != "transaction_date"]
+        elif _txn_date_gt and _txn_date_lt:
+            # No explicit period set — try to promote the raw filters into one.
+            try:
+                _yr_lo = int(str(_txn_date_gt.value)[:4])
+                _yr_hi = int(str(_txn_date_lt.value)[:4])
+                if _yr_lo == _yr_hi:
+                    plan.period = Period(kind="year", value=str(_yr_lo))
+                    plan.filters = [f for f in plan.filters if f.field != "transaction_date"]
+                elif _yr_hi - _yr_lo == 1:
+                    plan.period = Period(kind="custom", start=str(_txn_date_gt.value)[:10],
+                                         end=str(_txn_date_lt.value)[:10])
+                    plan.filters = [f for f in plan.filters if f.field != "transaction_date"]
+                else:
+                    # Multi-year span — use the lower bound as a custom start, drop the filters
+                    plan.period = Period(kind="custom", start=str(_txn_date_gt.value)[:10],
+                                         end=str(_txn_date_lt.value)[:10])
+                    plan.filters = [f for f in plan.filters if f.field != "transaction_date"]
+            except (ValueError, TypeError):
+                pass  # leave filters as-is if parsing fails
+
+
+    # 2. Strip account_id from the plan unless the new question explicitly
+    #    mentions an account identifier. account_id is an internal UUID that
+    #    the user never typed; silently inheriting it ghost-scopes the query.
+    _q_lower = question.lower()
+    _mentions_acct_q = bool(re.search(r"\baccount\b.{0,20}\d{4}|xxxxxx\d{4}\b", _q_lower, re.I))
+    if not _mentions_acct_q:
+        plan.filters = [f for f in plan.filters if f.field != "account_id"]
+        # Also drop account_number_masked if the period changed from previous
+        if previous_plan and previous_plan.period and plan.period:
+            _pchg = (
+                plan.period.kind != previous_plan.period.kind
+                or getattr(plan.period, "value", None) != getattr(previous_plan.period, "value", None)
+                or getattr(plan.period, "n", None) != getattr(previous_plan.period, "n", None)
+            )
+            if _pchg:
+                plan.filters = [f for f in plan.filters if f.field != "account_number_masked"]
 
     if plan.intent == "compare":
         plan.compare_to_previous = True

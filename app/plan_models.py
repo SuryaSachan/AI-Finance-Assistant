@@ -65,6 +65,7 @@ class Period(BaseModel):
     value: str | None = None
     start: str | None = None
     end: str | None = None
+    exclude_weekends: bool = False
 
 
 class Sort(BaseModel):
