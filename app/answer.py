@@ -19,13 +19,15 @@ from .llm import Usage, llm
 from .planner import PlanResult
 from .schema_catalog import DATASETS
 
-NUM_RE = re.compile(r"[-+]?\$?\s?\d[\d,]*(?:\.\d+)?\s?(?:%|k|K|m|M|bn|B)?")
+NUM_RE = re.compile(r"[-+]?[₹$€]?\s?\d[\d,]*(?:\.\d+)?\s?(?:%|k|K|m|M|bn|B)?")
 
 NARRATOR_SYSTEM = """You are a finance analyst assistant. You are given a QUESTION and FACTS
 that were already computed from the company's database.
 
 Rules:
-- Use ONLY numbers that appear in FACTS. Never calculate, estimate or round to a new number.
+- ALWAYS format money amounts with the currency symbol ₹ and Indian comma grouping (e.g. ₹7,04,41,50,133.60). Use the pre-formatted values in totals_formatted.
+- Never output raw unformatted numbers like 7044150133.6 for money.
+- Never calculate, estimate or round to an ungrounded number.
 - 2-3 short sentences. Plain language. No markdown tables, no bullet lists, no preamble.
 - State the period and what was filtered.
 - If FACTS say no records were found, say clearly that there is no matching data.
@@ -44,7 +46,23 @@ class Answer:
 def money(v: float | int | None) -> str:
     if v is None:
         return "n/a"
-    return f"{config.CURRENCY_SYMBOL}{v:,.2f}"
+    s = f"{abs(v):.2f}"
+    parts = s.split(".")
+    int_part, dec_part = parts[0], parts[1]
+    if len(int_part) <= 3:
+        fmt_int = int_part
+    else:
+        last3 = int_part[-3:]
+        rest = int_part[:-3]
+        groups = []
+        while len(rest) > 2:
+            groups.append(rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.append(rest)
+        fmt_int = ",".join(reversed(groups)) + "," + last3
+    sign = "-" if v < 0 else ""
+    return f"{sign}{config.CURRENCY_SYMBOL}{fmt_int}.{dec_part}"
 
 
 def describe_filters(plan) -> str:
@@ -152,7 +170,7 @@ def deterministic_answer(ex: Execution, pr: PlanResult) -> str:
 
 # ---------------------------------------------------------------- guardrails
 def _parse_number(token: str) -> float | None:
-    t = token.strip().replace("$", "").replace(",", "").replace(" ", "")
+    t = token.strip().replace("₹", "").replace("$", "").replace("€", "").replace(",", "").replace(" ", "")
     mult = 1.0
     if t.endswith("%"):
         t = t[:-1]
@@ -222,6 +240,8 @@ def facts_payload(ex: Execution, pr: PlanResult, anomalies: list[dict]) -> dict:
         "metric": metric_label(plan),
         "matching_record_count": ex.total_records,
         "totals": {k: v for k, v in ex.totals.items()},
+        "totals_formatted": {k: money(v) for k, v in ex.totals.items()},
+        "currency_symbol": config.CURRENCY_SYMBOL,
     }
     if ex.rows:
         payload["breakdown_rows"] = ex.rows[: config.LLM_ROW_BUDGET]
@@ -253,6 +273,16 @@ def narrate(question: str, ex: Execution, pr: PlanResult, anomalies: list[dict],
     bad = verify_numbers(text, allowed_numbers(ex, question))
     if bad:
         return Answer(fallback, "deterministic", True, bad)
+
+    # Uniformity guarantee: if the narrator emitted raw floats for totals without the currency symbol, format them
+    for k, val in ex.totals.items():
+        if isinstance(val, (int, float)) and val > 0:
+            formatted_val = money(val)
+            for r in [f"{val:.1f}", f"{val:.2f}", f"{val:.0f}", str(val)]:
+                pattern = rf"(?<![₹$€\d]){re.escape(r)}(?!\d)"
+                if re.search(pattern, text):
+                    text = re.sub(pattern, formatted_val, text)
+
     return Answer(text, "llm", False, [])
 
 

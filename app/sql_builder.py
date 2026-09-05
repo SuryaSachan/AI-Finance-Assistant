@@ -25,7 +25,7 @@ def _can_use_rollup(plan: QueryPlan, ds: Dataset) -> bool:
         return False
     if plan.intent not in ("aggregate", "trend"):
         return False
-    if plan.period and plan.period.kind in ("last_n_days", "custom"):
+    if plan.period and (plan.period.kind in ("last_n_days", "custom") or getattr(plan.period, "exclude_weekends", False)):
         return False
     
     # Check if any filters or groupings use cols not in the rollup
@@ -135,6 +135,8 @@ def _where(ds: Dataset, plan: QueryPlan, start: date | None, end: date | None, p
         else:
             clauses.append(f'"{ds.date_field}" BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)')
             params.extend([start.isoformat(), end.isoformat()])
+    if plan.period and getattr(plan.period, "exclude_weekends", False) and ds.date_field:
+        clauses.append(f'dayofweek("{ds.date_field}") BETWEEN 1 AND 5')
     for f in plan.filters:
         clauses.append(_filter_sql(ds, f, params))
     return " AND ".join(clauses) if clauses else "1=1"
