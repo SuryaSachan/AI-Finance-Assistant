@@ -261,7 +261,6 @@ def main() -> None:
     if enc_enabled():
         print("  Encrypting account_number and utr_number (AES-256-SIV) ...")
         accounts["account_number"] = encrypt_series(accounts["account_number"])
-        txns["utr_number"] = encrypt_series(txns["utr_number"])
     else:
         print("  Encryption disabled (no ENCRYPTION_KEY in .env)")
 
@@ -281,6 +280,8 @@ def main() -> None:
     while written < args.transactions:
         size = min(args.chunk, args.transactions - written)
         chunk = build_transactions(rng, accounts, size, start, end, id_offset=written)
+        if enc_enabled():
+            chunk["utr_number"] = encrypt_series(chunk["utr_number"])
         con.register("tmp_df", chunk)
         if written == 0:
             con.execute("CREATE OR REPLACE TABLE transaction AS SELECT * FROM tmp_df")
