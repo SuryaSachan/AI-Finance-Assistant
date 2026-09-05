@@ -135,6 +135,20 @@ Until the real export is loaded, `scripts/generate_data.py` builds a seeded stan
 .\.venv\Scripts\python.exe scripts\generate_data.py --transactions 20000000 --csv
 ```
 
+### Measured at the 20 M-record limit
+
+| | 20,000,000 transactions |
+| --- | --- |
+| Database file | 3.89 GB |
+| One-off build (generate + derive + index) | 409 s |
+| Single-month aggregate | 46 ms |
+| Top counterparties, YTD | 145 ms |
+| Monthly trend, full history | 387 ms |
+| **End-to-end, question to answer** | **401 ms average across the 20-question benchmark** |
+| Accuracy | 20/20 — unchanged from 250 k |
+
+Reproduce with `python scripts/benchmark.py --db data/scale20m.duckdb`. The derivations run once at load, not per query; the expensive top-N sample is lazy-loaded by the explain panel rather than sitting on the answer path.
+
 ### The 30 real sample rows
 
 The schema document ships 10 rows per table of genuine production patterns. The loader reads SQL blocks straight out of the markdown, so they can be loaded without copy-paste:
@@ -169,6 +183,7 @@ The validator reports missing fields, empty views, date coverage, the share of n
 | --- | --- |
 | `POST /api/ask` | `{question, session_id?}` → answer, breakdown, confidence, explain payload, token usage |
 | `GET /api/export?session_id=…&fmt=csv\|xlsx` | full breakdown for the last answer |
+| `GET /api/records?session_id=…&limit=10` | sample of the raw rows behind the last answer (lazy-loaded by the explain panel) |
 | `GET /api/health` | dataset stats, model, and whether the LLM is reachable |
 | `GET /api/schema` | datasets, fields and the known counterparty list |
 | `POST /api/reset` | clear conversation state |

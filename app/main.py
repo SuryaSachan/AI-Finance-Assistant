@@ -96,6 +96,16 @@ def reset(req: AskRequest) -> dict:
     return {"ok": True}
 
 
+@app.get("/api/records")
+def records(session_id: str, limit: int = 10) -> dict:
+    """Sample of the raw rows behind the last answer, fetched on demand."""
+    session = engine.sessions.get(session_id)
+    if not session.last_answer_plan:
+        raise HTTPException(status_code=404, detail="Nothing to show yet for this session.")
+    columns, rows = executor.supporting_records(session.last_answer_plan, limit=limit)
+    return {"columns": columns, "rows": rows}
+
+
 @app.get("/api/export")
 def export(session_id: str, fmt: str = "csv"):
     session = engine.sessions.get(session_id)

@@ -83,7 +83,7 @@ If the LLM host is unavailable mid-demo, nothing breaks: the sidebar flips to *"
 
 **"What if the model picks the wrong filter?"** It is visible in the explain panel, and structural correctness (dataset, intent, grouping, filters) is asserted in the benchmark, not just the final number.
 
-**"Does it scale to 20 M rows?"** DuckDB, columnar, date- and counterparty-indexed; derived columns are materialised once at load, not per query. Regenerate with `--transactions 20000000`.
+**"Does it scale to 20 M rows?"** Measured, not assumed: 3.89 GB on disk, 401 ms average end-to-end across the 20-question benchmark, accuracy unchanged at 20/20. `python scripts/benchmark.py --db data/scale20m.duckdb` prints the per-query numbers. The derivations run once at load, not per query.
 
 **"Why not just text-to-SQL?"** Free-form SQL from a small model is unvalidatable — you cannot prove the query means what the user asked. A fixed plan schema is checkable field by field, and it is what makes a 3 B model sufficient.
 

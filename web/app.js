@@ -131,9 +131,7 @@ function render(el, d) {
           </ul>
           <h4>Why this confidence</h4>
           <ul class="kv">${(conf.reasons || []).map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
-          ${d.supporting?.rows?.length
-            ? `<h4>Sample of the underlying records</h4>${table(d.supporting.columns, d.supporting.rows)}`
-            : ""}
+          ${d.has_records ? `<h4>Sample of the underlying records</h4><div class="records">loading…</div>` : ""}
         </div>
       </details>`
     : "";
@@ -154,6 +152,27 @@ function render(el, d) {
       ${exportHtml}
       ${explainHtml}
     </div>`;
+
+  const details = el.querySelector("details.explain");
+  if (details && d.has_records) {
+    details.addEventListener(
+      "toggle",
+      async () => {
+        if (!details.open) return;
+        const slot = details.querySelector(".records");
+        if (!slot || slot.dataset.loaded) return;
+        slot.dataset.loaded = "1";
+        try {
+          const r = await fetch(`/api/records?session_id=${encodeURIComponent(d.session_id)}&limit=10`);
+          const rec = await r.json();
+          slot.outerHTML = table(rec.columns, rec.rows);
+        } catch {
+          slot.textContent = "could not load records";
+        }
+      },
+      { once: false }
+    );
+  }
   messages.scrollTop = messages.scrollHeight;
 }
 

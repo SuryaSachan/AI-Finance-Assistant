@@ -84,7 +84,12 @@ def run(plan: QueryPlan) -> Execution:
     df = db.query(sql, params)
     elapsed = int((pd.Timestamp.utcnow() - t0).total_seconds() * 1000)
 
-    totals, total_records = _grand_totals(plan, start, end)
+    # an ungrouped aggregate already *is* the grand total - don't run it twice
+    if not plan.group_by and plan.intent not in ("list", "trend") and not df.empty:
+        totals = {k: jsonable(v) for k, v in df.iloc[0].items()}
+        total_records = int(totals.get("record_count") or 0)
+    else:
+        totals, total_records = _grand_totals(plan, start, end)
 
     ex = Execution(
         plan=plan,
@@ -100,12 +105,6 @@ def run(plan: QueryPlan) -> Execution:
         truncated=len(df) > config.MAX_ROWS or total_records > len(df),
         elapsed_ms=elapsed,
     )
-
-    if plan.intent != "list" and total_records:
-        s_sql, s_params = sql_builder.build_supporting_records(plan, start, end, limit=10)
-        s_df = db.query(s_sql, s_params)
-        ex.supporting_columns = list(s_df.columns)
-        ex.supporting_rows = frame_to_rows(s_df)
 
     if plan.compare_to_previous and start and end:
         p_start, p_end = periods.previous_period(start, end)
@@ -132,6 +131,19 @@ def _primary_metric_key(plan: QueryPlan, totals: dict) -> str:
         if m.name in totals:
             return m.name
     return "record_count"
+
+
+def supporting_records(plan: QueryPlan, limit: int = 10) -> tuple[list[str], list[dict]]:
+    """The largest raw rows behind an answer.
+
+    Fetched on demand rather than with the answer: the top-N sort is the most
+    expensive query in the pipeline and the sample is only ever shown inside the
+    collapsed 'How I got this' panel.
+    """
+    start, end, _ = periods.resolve(plan.period.model_dump() if plan.period else None, db.anchor_date())
+    sql, params = sql_builder.build_supporting_records(plan, start, end, limit=limit)
+    df = db.query(sql, params)
+    return list(df.columns), frame_to_rows(df)
 
 
 def export_frame(plan: QueryPlan) -> pd.DataFrame:

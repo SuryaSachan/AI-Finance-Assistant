@@ -130,7 +130,9 @@ def _narrations(rng, n, merchant_idx, person_idx, kind, bank_codes, acct_numbers
     return out
 
 
-def build_transactions(rng, accounts: pd.DataFrame, n: int, start: date, end: date) -> pd.DataFrame:
+def build_transactions(
+    rng, accounts: pd.DataFrame, n: int, start: date, end: date, id_offset: int = 0
+) -> pd.DataFrame:
     n_months = (end.year - start.year) * 12 + (end.month - start.month) + 1
     months = [pd.Timestamp(start) + pd.DateOffset(months=i) for i in range(n_months)]
     trend = np.linspace(0.75, 1.4, n_months)
@@ -186,7 +188,7 @@ def build_transactions(rng, accounts: pd.DataFrame, n: int, start: date, end: da
 
     df = pd.DataFrame(
         {
-            "transaction_id": [f"{i:08x}-0000-4000-9000-{i:012x}" for i in range(1, n + 1)],
+            "transaction_id": [f"{i:08x}-0000-4000-9000-{i:012x}" for i in range(id_offset + 1, id_offset + n + 1)],
             "account_id": account_id,
             "transaction_date": timestamps,
             "transaction_type": txn_type,
@@ -223,6 +225,7 @@ def main() -> None:
     ap.add_argument("--months", type=int, default=30)
     ap.add_argument("--end", type=str, default=date.today().isoformat())
     ap.add_argument("--db", type=str, default=str(ROOT / "data" / "finance.duckdb"))
+    ap.add_argument("--chunk", type=int, default=1_000_000, help="rows generated per batch")
     ap.add_argument("--csv", action="store_true")
     args = ap.parse_args()
 
@@ -234,7 +237,6 @@ def main() -> None:
     print(f"Generating {args.transactions:,} transactions from {start} to {end} ...")
     banks = build_banks()
     accounts = build_accounts(rng, args.accounts, args.entities)
-    txns = build_transactions(rng, accounts, args.transactions, start, end)
 
     db_path = Path(args.db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,11 +244,34 @@ def main() -> None:
         db_path.unlink()
 
     con = duckdb.connect(str(db_path))
-    for name, df in [("bank", banks), ("account", accounts), ("transaction", txns)]:
+    for name, df in [("bank", banks), ("account", accounts)]:
         con.register("tmp_df", df)
         con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM tmp_df")
         con.unregister("tmp_df")
         print(f"  {name:<14} {len(df):>12,} rows")
+
+    written = 0
+    while written < args.transactions:
+        size = min(args.chunk, args.transactions - written)
+        chunk = build_transactions(rng, accounts, size, start, end, id_offset=written)
+        con.register("tmp_df", chunk)
+        if written == 0:
+            con.execute("CREATE OR REPLACE TABLE transaction AS SELECT * FROM tmp_df")
+        else:
+            con.execute("INSERT INTO transaction SELECT * FROM tmp_df")
+        con.unregister("tmp_df")
+        written += size
+        del chunk
+        print(f"  transaction    {written:>12,} rows", end="\r", flush=True)
+    print(f"  transaction    {written:>12,} rows")
+
+    if args.csv:
+        out = db_path.parent / "csv"
+        out.mkdir(exist_ok=True)
+        banks.to_csv(out / "bank.csv", index=False)
+        accounts.to_csv(out / "account.csv", index=False)
+        con.execute(f"COPY transaction TO '{(out / 'transaction.csv').as_posix()}' (HEADER, DELIMITER ',')")
+        print(f"CSV extracts written to {out}")
 
     print("Deriving counterparty / channel / reconciliation and building views ...")
     views.build(con)
@@ -256,14 +281,6 @@ def main() -> None:
         "FROM txn_enriched"
     ).fetchone()[0]
     print(f"  counterparties {cp:>12,} distinct   ({unknown}% of rows unidentified)")
-
-    if args.csv:
-        out = db_path.parent / "csv"
-        out.mkdir(exist_ok=True)
-        banks.to_csv(out / "bank.csv", index=False)
-        accounts.to_csv(out / "account.csv", index=False)
-        txns.to_csv(out / "transaction.csv", index=False)
-        print(f"CSV extracts written to {out}")
 
     con.close()
     print(f"\nDone -> {db_path}")

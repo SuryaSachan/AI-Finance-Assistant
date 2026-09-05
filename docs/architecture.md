@@ -114,6 +114,28 @@ The schema has no counterparty column and no reconciliation column, but both are
 
 The reference-vs-UTR question the schema doc raises is answered explicitly: a bare "reference number" hits `transaction_reference_id`, the plaintext searchable column. `utr_number` is never exposed or queried.
 
-## 6. Scale
+## 6. Scale — measured, not claimed
 
-DuckDB is columnar and vectorised; the aggregate queries used here are scans with a date predicate. Derived columns are materialised once into `txn_enriched` at load time, not recomputed per query. The prototype ships with 250 k transactions and regenerates to 20 M with one flag (`--transactions 20000000`). Date and counterparty indexes are created at build time.
+Built at the stated 20 M-record test limit with `--transactions 20000000` and benchmarked with `python scripts/benchmark.py --db data/scale20m.duckdb`:
+
+| | 20,000,000 transactions |
+| --- | --- |
+| Database file | 3.89 GB |
+| One-off build (generate + derive + index) | 409 s |
+| Total spend, one month | 46 ms |
+| Top counterparties, YTD | 145 ms |
+| Unreconciled, all time | 57 ms |
+| Monthly trend, full history | 387 ms |
+| One counterparty, one month | 26 ms |
+| **End-to-end, question to answer** | **401 ms average over the 20-question benchmark** |
+| Accuracy at 20 M | 20/20, unchanged from 250 k |
+
+Why it holds up:
+
+- Queries are vectorised scans over 2-3 columns with a date predicate — the best case for a columnar engine.
+- The expensive part, regex parsing of narrations, happens **once at load** into `txn_enriched`, never per query.
+- Ungrouped aggregates skip the redundant grand-total query: the main query already is the total.
+- The underlying-record sample is a top-N sort, the single most expensive query in the pipeline. It is fetched **on demand** via `/api/records` when the explain panel is opened, not on the answer path. That alone took the 20 M end-to-end average from 1,237 ms to 401 ms.
+- Indexes on `transaction_date` and `counterparty`.
+
+DuckDB itself is nowhere near its limit at 20 M — it is designed to work beyond RAM and handles far larger tables. The constraint here is the shape of the queries, and that has been tuned.

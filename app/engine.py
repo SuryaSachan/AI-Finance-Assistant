@@ -63,7 +63,7 @@ def _refusal(session: Session, question: str, text: str, status: str, usage: Usa
         "answer_source": "deterministic",
         "confidence": {"level": "low", "score": 0.3, "reasons": reasons},
         "table": {"columns": [], "rows": []},
-        "supporting": {"columns": [], "rows": []},
+        "has_records": False,
         "comparison": None,
         "anomalies": [],
         "explain": {"plan": None, "sql": None, "assumptions": [], "issues": reasons, "plan_source": None},
@@ -133,7 +133,7 @@ def ask(question: str, session_id: str | None = None) -> dict:
         "date_range": [ex.start.isoformat() if ex.start else None, ex.end.isoformat() if ex.end else None],
         "totals": ex.totals,
         "table": {"columns": ex.columns, "rows": ex.rows, "truncated": ex.truncated},
-        "supporting": {"columns": ex.supporting_columns, "rows": ex.supporting_rows},
+        "has_records": bool(ex.total_records),
         "comparison": ex.comparison,
         "anomalies": found_anomalies,
         "explain": {
