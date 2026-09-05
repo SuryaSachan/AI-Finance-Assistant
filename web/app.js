@@ -3,7 +3,11 @@ const messages = $("#messages");
 let sessionId = null;
 let busy = false;
 
-const MONEY_COLS = /amount|total|balance|sum_|avg_|min_|max_|value|baseline/i;
+function isMoneyCol(col) {
+  if (!col) return false;
+  if (/count|records|quantity|number/i.test(col)) return false;
+  return /amount|total|balance|sum_|avg_|min_|max_|value|baseline/i.test(col);
+}
 const CURRENCY = "INR";
 
 function fmtMoney(v) {
@@ -17,7 +21,7 @@ function esc(s) {
 
 function fmtCell(col, v) {
   if (v === null || v === undefined) return '<span style="color:#556">—</span>';
-  if (typeof v === "number" && MONEY_COLS.test(col)) return fmtMoney(v);
+  if (typeof v === "number" && isMoneyCol(col)) return fmtMoney(v);
   if (typeof v === "number") return v.toLocaleString();
   return esc(v);
 }
