@@ -156,6 +156,12 @@ def build(plan: QueryPlan, start: date | None, end: date | None) -> tuple[str, l
     if plan.dataset == "transactions" and _can_use_rollup(plan, ds):
         use_rollup = True
 
+    # Fast path for un-filtered total transaction count
+    if plan.dataset == "transactions" and plan.intent == "aggregate" and not plan.group_by and not plan.filters and not start and not end:
+        metrics = plan.metrics or [Metric(agg="count")]
+        if len(metrics) == 1 and metrics[0].agg == "count":
+            return 'SELECT count(*) AS "record_count" FROM txn_raw', []
+
     if plan.intent == "list":
         cols = ", ".join(f'"{c}"' for c in ds.default_columns)
         where = _where(ds, plan, start, end, params, use_rollup=use_rollup)

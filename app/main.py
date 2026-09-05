@@ -51,7 +51,7 @@ def health() -> dict:
             "provider": config.LLM_PROVIDER,
             "model": config.LLM_MODEL,
             "fallback_model": config.LLM_MODEL_FALLBACK or None,
-            "reachable": llm.health(refresh=True),
+            "reachable": llm.health(),
             "mode": "llm" if llm.health() else "deterministic rule parser (no LLM reachable)",
         },
     }

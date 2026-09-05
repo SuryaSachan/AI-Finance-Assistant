@@ -256,7 +256,8 @@ def facts_payload(ex: Execution, pr: PlanResult, anomalies: list[dict]) -> dict:
 
 def narrate(question: str, ex: Execution, pr: PlanResult, anomalies: list[dict], usage: Usage) -> Answer:
     fallback = deterministic_answer(ex, pr)
-    if not llm.health() or ex.total_records == 0:
+    # For simple count/aggregate questions, deterministic_answer is instant (0.001s) and perfectly accurate
+    if not llm.health() or ex.total_records == 0 or ex.plan.intent in ("aggregate", "list"):
         return Answer(fallback, "deterministic", False, [])
 
     facts = json.dumps(facts_payload(ex, pr, anomalies), default=str)[:4000]

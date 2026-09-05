@@ -56,9 +56,10 @@ def merge_columns(overrides: dict | None) -> dict[str, dict[str, str]]:
     return merged
 
 
-def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None:
+def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None, as_view: bool = False) -> None:
     c = merge_columns(overrides)
     t, a, b = c["transaction"], c["account"], c["bank"]
+    tbl = "VIEW" if as_view else "TABLE"
 
     # ── Register a temporary Python UDF for decryption (build time only) ──
     if enc_enabled():
@@ -72,10 +73,10 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
     else:
         recon_expr = reconciliation_sql(t["transaction_reference_id"], t["utr_number"])
 
-    # ── 1. Materialise the enriched transaction table ──────────────────
+    # ── 1. Materialise or view the enriched transaction table ──────────────────
     con.execute(
         f"""
-        CREATE OR REPLACE TABLE txn_enriched AS
+        CREATE OR REPLACE {tbl} txn_raw AS
         SELECT
             {t['transaction_id']}                              AS transaction_id,
             {t['account_id']}                                  AS account_id,
@@ -94,34 +95,46 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
     # Real narrations spell the same counterparty with and without spaces
     # (SELECTION MOBILE vs SELECTIONMOBILE). Fold them onto one canonical name,
     # preferring the spaced spelling, so grouping does not split a merchant in two.
-    con.execute(
-        """
-        CREATE OR REPLACE TABLE counterparty_map AS
-        WITH variants AS (
-            SELECT counterparty_raw AS cp,
-                   replace(counterparty_raw, ' ', '') AS squashed,
-                   count(*) AS n
-            FROM txn_enriched
-            GROUP BY 1, 2
+    if as_view:
+        con.execute(
+            f"""
+            CREATE OR REPLACE VIEW txn_enriched AS
+            SELECT e.* EXCLUDE (counterparty_raw),
+                   CASE WHEN e.channel = 'CHARGES' THEN 'BANK CHARGES'
+                        ELSE e.counterparty_raw END AS counterparty
+            FROM txn_raw e
+            """
         )
-        SELECT squashed,
-               arg_max(cp, n * CASE WHEN cp LIKE '% %' THEN 2 ELSE 1 END) AS canonical
-        FROM variants
-        GROUP BY 1
-        """
-    )
-    con.execute(
-        """
-        CREATE OR REPLACE TABLE txn_enriched AS
-        SELECT e.* EXCLUDE (counterparty_raw),
-               CASE WHEN e.channel = 'CHARGES' THEN 'BANK CHARGES'
-                    ELSE COALESCE(m.canonical, e.counterparty_raw) END AS counterparty
-        FROM txn_enriched e
-        LEFT JOIN counterparty_map m ON replace(e.counterparty_raw, ' ', '') = m.squashed
-        """
-    )
-    con.execute("CREATE INDEX IF NOT EXISTS idx_txn_date ON txn_enriched(transaction_date)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_txn_cp ON txn_enriched(counterparty)")
+    else:
+        con.execute(
+            f"""
+            CREATE OR REPLACE TABLE counterparty_map AS
+            WITH variants AS (
+                SELECT counterparty_raw AS cp,
+                       replace(counterparty_raw, ' ', '') AS squashed,
+                       count(*) AS n
+                FROM txn_raw
+                GROUP BY 1, 2
+            )
+            SELECT squashed,
+                   arg_max(cp, n * CASE WHEN cp LIKE '% %' THEN 2 ELSE 1 END) AS canonical
+            FROM variants
+            GROUP BY 1
+            """
+        )
+        con.execute(
+            f"""
+            CREATE OR REPLACE TABLE txn_enriched AS
+            SELECT e.* EXCLUDE (counterparty_raw),
+                   CASE WHEN e.channel = 'CHARGES' THEN 'BANK CHARGES'
+                        ELSE COALESCE(m.canonical, e.counterparty_raw) END AS counterparty
+            FROM txn_raw e
+            LEFT JOIN counterparty_map m ON replace(e.counterparty_raw, ' ', '') = m.squashed
+            """
+        )
+    if not as_view:
+        con.execute("CREATE INDEX IF NOT EXISTS idx_txn_date ON txn_enriched(transaction_date)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_txn_cp ON txn_enriched(counterparty)")
 
     # ── 2. Materialise a masked-account lookup table ───────────────────
     # When encryption is enabled, account_number is ciphertext in the raw
@@ -134,7 +147,7 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
 
     con.execute(
         f"""
-        CREATE OR REPLACE TABLE account_masked AS
+        CREATE OR REPLACE {tbl} account_masked AS
         SELECT
             {a['account_id']}                                  AS account_id,
             {mask_expr}                                        AS account_number_masked,
@@ -182,8 +195,8 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
     )
     
     con.execute(
-        """
-        CREATE OR REPLACE TABLE rollup_monthly AS
+        f"""
+        CREATE OR REPLACE {tbl} rollup_monthly AS
         SELECT 
             account_id,
             strftime(transaction_date, '%Y-%m') AS txn_month,
@@ -223,8 +236,8 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
 
     # Counterparty list used for entity resolution and for refusing unknown names.
     con.execute(
-        """
-        CREATE OR REPLACE TABLE counterparties AS
+        f"""
+        CREATE OR REPLACE {tbl} counterparties AS
         SELECT counterparty, count(*) AS txn_count, sum(amount) AS total_amount
         FROM txn_enriched
         WHERE counterparty <> 'UNIDENTIFIED'
