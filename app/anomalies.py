@@ -31,7 +31,7 @@ def detect(plan: QueryPlan, start: date | None, end: date | None, limit: int = 5
     sql = f"""
     WITH monthly AS (
         SELECT "{entity}" AS entity,
-               strftime("{ds.date_field}", '%Y-%m') AS ym,
+               DATE_FORMAT("{ds.date_field}", '%Y-%m') AS ym,
                sum("{ds.amount_field}") AS total
         FROM {ds.view}
         WHERE ({where}) AND "{ds.date_field}" BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)

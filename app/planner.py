@@ -15,6 +15,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from functools import lru_cache
 
 from pydantic import ValidationError
 from rapidfuzz import fuzz, process
@@ -81,6 +82,72 @@ PHRASE_STOPWORDS = {
     "upi", "neft", "imps", "rtgs", "cheque", "check", "ach", "nach", "atm", "charges",
 }
 
+# ---- Spell-correction vocabulary ----------------------------------------
+FINANCE_TERMS = {
+    # Categories / keywords users commonly search for
+    "fuel", "petrol", "diesel", "electricity", "water", "rent", "salary",
+    "insurance", "loan", "interest", "tax", "refund", "reimbursement",
+    "invoice", "bill", "subscription", "maintenance", "travel", "hotel",
+    "food", "grocery", "office", "supplies", "software", "equipment",
+    "utilities", "telecom", "internet", "commission", "dividend",
+    "charges", "settlement", "reconciliation", "reconciled", "unreconciled",
+    "amazon", "swiggy", "zomato", "flipkart", "paytm",
+}
+
+
+@lru_cache(maxsize=1)
+def _build_spell_vocab() -> tuple[str, ...]:
+    """Domain vocabulary for catching typos in user questions."""
+    words: set[str] = set(FINANCE_TERMS)
+    try:
+        for name in db.counterparty_names():
+            for w in re.findall(r'[A-Za-z]{3,}', name.lower()):
+                words.add(w)
+    except Exception:
+        pass  # DB not ready; static terms only
+    words -= PHRASE_STOPWORDS
+    return tuple(words)
+
+
+def _correct_query(question: str) -> tuple[str, list[str]]:
+    """Fix obvious spelling mistakes using domain vocabulary.
+
+    Returns (corrected_question, list_of_corrections).
+    """
+    vocab = _build_spell_vocab()
+    if not vocab:
+        return question, []
+
+    vocab_set = set(vocab)
+    corrections: list[str] = []
+    out_parts: list[str] = []
+
+    for tok in re.split(r'(\s+)', question):
+        if not tok or not tok.strip():
+            out_parts.append(tok)
+            continue
+        m = re.match(r'^([^\w]*)(\w+)([^\w]*)$', tok)
+        if not m:
+            out_parts.append(tok)
+            continue
+        pre, core, suf = m.group(1), m.group(2), m.group(3)
+        lc = core.lower()
+
+        # Skip: too short, already known, or a stop-word
+        if len(lc) < 4 or lc in vocab_set or lc in PHRASE_STOPWORDS:
+            out_parts.append(tok)
+            continue
+
+        hit = process.extractOne(lc, vocab, scorer=fuzz.ratio, score_cutoff=75)
+        if hit and hit[0] != lc:
+            corrections.append(f'"{core}" \u2192 "{hit[0]}"')
+            out_parts.append(f"{pre}{hit[0]}{suf}")
+        else:
+            out_parts.append(tok)
+
+    return "".join(out_parts), corrections
+
+
 SYSTEM_PROMPT = """You translate finance questions into a JSON query plan.
 You NEVER calculate numbers and NEVER invent data. You only emit JSON.
 
@@ -116,6 +183,7 @@ RULES
 - If it is genuinely ambiguous, use intent "clarify" and put the question in "clarification".
 - A follow-up question inherits the debit/credit direction from previous_plan unless it overrides them. Do NOT inherit account_id or account_number_masked filters unless the user explicitly mentions an account number.
 - **NEVER use raw transaction_date filters to represent a year, month, or quarter. Always encode time ranges in the period object** (e.g. period.kind="year" with period.value=2025, NOT filters with field="transaction_date").
+- **Fix obvious spelling mistakes in the user's search terms** before generating filters (e.g. 'fule' -> 'fuel', 'amazn' -> 'amazon', 'zomto' -> 'zomato').
 - Output ONLY the JSON object.
 
 EXAMPLES
@@ -171,6 +239,14 @@ def resolve_entities(plan: QueryPlan) -> tuple[QueryPlan, list[str], float, str 
                 worst = min(worst, float(match[1]))
                 f.value = match[0]
                 f.op = "eq" if f.op == "contains" else f.op
+            elif plan.dataset == "transactions":
+                # No close counterparty match → search descriptions instead
+                notes.append(
+                    f'No counterparty named "{f.value}" on file; '
+                    f'searching transaction descriptions for "{f.value}" instead.'
+                )
+                f.field = "description"
+                f.op = "contains"
             else:
                 unknown = f.value
         elif f.field == "bank_name" and isinstance(f.value, str):
@@ -547,6 +623,9 @@ def make_plan(
     issues: list[str] = []
     raw: dict | None = None
 
+    # Auto-correct obvious spelling mistakes before planning
+    question, spell_fixes = _correct_query(question)
+
     if llm.health():
         system = SYSTEM_PROMPT.format(schema=schema_prompt())
         user = _user_prompt(question, history, previous_plan)
@@ -632,6 +711,8 @@ def make_plan(
         plan.intent = "compare"
 
     notes = apply_business_defaults(plan, question)
+    if spell_fixes:
+        notes.insert(0, "Auto-corrected: " + ", ".join(spell_fixes) + ".")
     plan, ent_notes, ent_score, unknown = resolve_entities(plan)
     return PlanResult(
         plan=plan,

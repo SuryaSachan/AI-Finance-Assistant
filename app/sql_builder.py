@@ -1,4 +1,4 @@
-"""Turn a validated QueryPlan into parameterised DuckDB SQL.
+"""Turn a validated QueryPlan into parameterised MySQL SQL.
 
 Only identifiers that exist in `schema_catalog` can ever reach the query
 string; every literal is bound as a parameter. That makes this layer both
@@ -136,7 +136,7 @@ def _where(ds: Dataset, plan: QueryPlan, start: date | None, end: date | None, p
             clauses.append(f'"{ds.date_field}" BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)')
             params.extend([start.isoformat(), end.isoformat()])
     if plan.period and getattr(plan.period, "exclude_weekends", False) and ds.date_field:
-        clauses.append(f'dayofweek("{ds.date_field}") BETWEEN 1 AND 5')
+        clauses.append(f'WEEKDAY("{ds.date_field}") BETWEEN 0 AND 4')
     for f in plan.filters:
         clauses.append(_filter_sql(ds, f, params))
     return " AND ".join(clauses) if clauses else "1=1"
@@ -160,7 +160,7 @@ def build(plan: QueryPlan, start: date | None, end: date | None) -> tuple[str, l
     if plan.dataset == "transactions" and plan.intent == "aggregate" and not plan.group_by and not plan.filters and not start and not end:
         metrics = plan.metrics or [Metric(agg="count")]
         if len(metrics) == 1 and metrics[0].agg == "count":
-            return 'SELECT count(*) AS "record_count" FROM txn_raw', []
+            return 'SELECT count(*) AS "record_count" FROM transaction_base', []
 
     if plan.intent == "list":
         cols = ", ".join(f'"{c}"' for c in ds.default_columns)
@@ -182,8 +182,8 @@ def build(plan: QueryPlan, start: date | None, end: date | None) -> tuple[str, l
             select_parts.append(f'txn_month AS "period"')
             group_exprs.append(f'txn_month')
         else:
-            select_parts.append(f'strftime("{ds.date_field}", \'%Y-%m\') AS "period"')
-            group_exprs.append(f'strftime("{ds.date_field}", \'%Y-%m\')')
+            select_parts.append(f'DATE_FORMAT("{ds.date_field}", \'%Y-%m\') AS "period"')
+            group_exprs.append(f'DATE_FORMAT("{ds.date_field}", \'%Y-%m\')')
     for g in plan.group_by:
         c = _col(ds, g)
         select_parts.append(f"{c} AS {c}")

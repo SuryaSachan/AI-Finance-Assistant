@@ -10,6 +10,8 @@ Both are derived here, with one SQL definition shared by the demo generator and
 the real-dataset loader, so the derivation is identical whichever path built the
 database. Every derived field is labelled DERIVED in the schema catalog and the
 assistant states the definition whenever it filters on one.
+
+SQL expressions are MySQL-compatible (MySQL 8.0+).
 """
 from __future__ import annotations
 
@@ -20,26 +22,26 @@ NOISE = (
 )
 _NOISE_SQL = ", ".join(f"'{n}'" for n in NOISE)
 
+
 # Longest run of capitalised words in the narration = the counterparty.
-# Written as list expressions (not a correlated subquery) so it stays vectorised.
+# Uses REGEXP_SUBSTR (MySQL 8.0+) to find uppercase word sequences.
 def counterparty_sql(description: str = "description") -> str:
+    """MySQL-compatible counterparty extraction from bank narration.
+
+    Uses REGEXP_SUBSTR to find the first long uppercase word sequence.
+    Matches either multi-word names (2+ chars each) or single words (6+ chars).
+    Simplified compared to the original DuckDB version which finds the longest match.
+    """
     return f"""
     COALESCE(
-      substr(
-        list_sort(
-          list_transform(
-            list_filter(
-              list_transform(
-                regexp_extract_all(upper(COALESCE({description}, '')), '[A-Z][A-Z]+(?:[ .&][A-Z]+)*'),
-                x -> trim(regexp_replace(x, '\\s+', ' ', 'g'))
-              ),
-              x -> length(x) >= 6 AND x NOT IN ({_NOISE_SQL})
-            ),
-            x -> lpad(CAST(length(x) AS VARCHAR), 3, '0') || x
-          ),
-          'DESC'
-        )[1],
-        4
+      NULLIF(
+        TRIM(
+          REGEXP_SUBSTR(
+            UPPER(COALESCE({description}, '')),
+            '[A-Z]{{2,}}( [A-Z]{{2,}})+|[A-Z]{{6,}}'
+          )
+        ),
+        ''
       ),
       'UNIDENTIFIED'
     )"""
@@ -49,7 +51,7 @@ CHANNELS = ("UPI", "NEFT", "IMPS", "RTGS", "FT", "CHEQUE", "ACH", "ATM", "CHARGE
 
 
 def channel_sql(description: str = "description") -> str:
-    d = f"upper(COALESCE({description}, ''))"
+    d = f"UPPER(COALESCE({description}, ''))"
     return f"""
     CASE
       WHEN {d} LIKE '%CHARGE%' OR {d} LIKE '%FEE%'          THEN 'CHARGES'
@@ -75,12 +77,12 @@ RECONCILIATION_DEFINITION = (
 def reconciliation_sql(reference: str = "transaction_reference_id", utr: str = "utr_number") -> str:
     return f"""
     CASE
-      WHEN {reference} IS NOT NULL AND trim(CAST({reference} AS VARCHAR)) <> '' THEN 'reconciled'
-      WHEN {utr}       IS NOT NULL AND trim(CAST({utr} AS VARCHAR)) <> ''       THEN 'reconciled'
+      WHEN {reference} IS NOT NULL AND TRIM(CAST({reference} AS CHAR)) <> '' THEN 'reconciled'
+      WHEN {utr}       IS NOT NULL AND TRIM(CAST({utr} AS CHAR)) <> ''       THEN 'reconciled'
       ELSE 'unreconciled'
     END"""
 
 
 def masked_account_sql(account_number: str = "account_number") -> str:
     """Account numbers are sensitive: only the last four digits ever leave the DB."""
-    return f"'XXXXXX' || right(CAST({account_number} AS VARCHAR), 4)"
+    return f"CONCAT('XXXXXX', RIGHT(CAST({account_number} AS CHAR), 4))"

@@ -32,7 +32,6 @@ LLM_API_KEY = (os.getenv("LLM_API_KEY") or "").strip()
 LLM_TIMEOUT_SECONDS = _float("LLM_TIMEOUT_SECONDS", 60)
 LLM_TEMPERATURE = _float("LLM_TEMPERATURE", 0.0)
 
-DB_PATH = ROOT / (os.getenv("DB_PATH") or "data/finance.duckdb")
 DATA_DIR = ROOT / "data"
 WEB_DIR = ROOT / "web"
 
