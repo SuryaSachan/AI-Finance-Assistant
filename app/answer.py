@@ -19,9 +19,9 @@ from .llm import Usage, llm
 from .planner import PlanResult
 from .schema_catalog import DATASETS
 
-NUM_RE = re.compile(r"[-+]?\$?\s?\d[\d,]*(?:\.\d+)?\s?(?:%|k|K|m|M|bn|B)?")
+NUM_RE = re.compile(r"[-+]?(?:\$|\u20b9)?\s?\d[\d,]*(?:\.\d+)?\s?(?:%|k|K|m|M|bn|B)?")
 
-NARRATOR_SYSTEM = """You are a finance analyst assistant. You are given a QUESTION and FACTS
+NARRATOR_SYSTEM = f"""You are a finance analyst assistant. You are given a QUESTION and FACTS
 that were already computed from the company's database.
 
 Rules:
@@ -29,6 +29,7 @@ Rules:
 - 2-3 short sentences. Plain language. No markdown tables, no bullet lists, no preamble.
 - State the period and what was filtered.
 - If FACTS say no records were found, say clearly that there is no matching data.
+- Always prefix every currency/money amount with the symbol '{config.CURRENCY_SYMBOL}' (e.g. {config.CURRENCY_SYMBOL}1,23,456.78). Never use '$' or any other symbol.
 """
 
 
@@ -152,7 +153,7 @@ def deterministic_answer(ex: Execution, pr: PlanResult) -> str:
 
 # ---------------------------------------------------------------- guardrails
 def _parse_number(token: str) -> float | None:
-    t = token.strip().replace("$", "").replace(",", "").replace(" ", "")
+    t = token.strip().replace("$", "").replace("\u20b9", "").replace(",", "").replace(" ", "")
     mult = 1.0
     if t.endswith("%"):
         t = t[:-1]
@@ -222,6 +223,7 @@ def facts_payload(ex: Execution, pr: PlanResult, anomalies: list[dict]) -> dict:
         "metric": metric_label(plan),
         "matching_record_count": ex.total_records,
         "totals": {k: v for k, v in ex.totals.items()},
+        "currency_symbol": config.CURRENCY_SYMBOL,
     }
     if ex.rows:
         payload["breakdown_rows"] = ex.rows[: config.LLM_ROW_BUDGET]
