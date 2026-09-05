@@ -20,6 +20,37 @@ AGG_SQL = {
     "count_distinct": "count(DISTINCT {col})",
 }
 
+def _can_use_rollup(plan: QueryPlan, ds: Dataset) -> bool:
+    if plan.dataset != "transactions":
+        return False
+    if plan.intent not in ("aggregate", "trend"):
+        return False
+    if plan.period and plan.period.kind in ("last_n_days", "custom"):
+        return False
+    
+    # Check if any filters or groupings use cols not in the rollup
+    rollup_cols = {
+        "account_id", "txn_month", "transaction_type", "counterparty", 
+        "account_number_masked", "entity_id", "program_id", "bank_code", "bank_name"
+    }
+    
+    for g in plan.group_by:
+        if g not in rollup_cols:
+            return False
+            
+    for f in plan.filters:
+        if f.field not in rollup_cols:
+            return False
+            
+    # count_distinct is impossible without raw rows or HLL
+    if plan.metrics:
+        for m in plan.metrics:
+            if m.agg == "count_distinct":
+                return False
+                
+    return True
+
+
 
 class PlanError(ValueError):
     """Raised when a plan references something outside the schema."""
@@ -31,10 +62,26 @@ def _col(ds: Dataset, name: str) -> str:
     return f'"{name}"'
 
 
-def _metric_expr(ds: Dataset, m: Metric) -> str:
+def _metric_expr(ds: Dataset, m: Metric, use_rollup: bool = False) -> str:
     if m.agg not in AGG_SQL:
         raise PlanError(f"unsupported aggregation '{m.agg}'")
     col = "*" if m.agg == "count" else _col(ds, m.field)
+    
+    if use_rollup:
+        if m.agg == "sum":
+            expr = "sum(sum_amount)"
+        elif m.agg == "count":
+            expr = "sum(record_count)"
+        elif m.agg == "min":
+            expr = "min(min_amount)"
+        elif m.agg == "max":
+            expr = "max(max_amount)"
+        elif m.agg == "avg":
+            expr = "(sum(sum_amount) / sum(record_count))"
+        else:
+            raise PlanError(f"unsupported rollup aggregation '{m.agg}'")
+        return f'{expr} AS "{m.name}"'
+        
     return f'{AGG_SQL[m.agg].format(col=col)} AS "{m.name}"'
 
 
@@ -79,11 +126,15 @@ def _filter_sql(ds: Dataset, f: Filter, params: list) -> str:
     return f"{col} {sym} ?"
 
 
-def _where(ds: Dataset, plan: QueryPlan, start: date | None, end: date | None, params: list) -> str:
+def _where(ds: Dataset, plan: QueryPlan, start: date | None, end: date | None, params: list, use_rollup: bool = False) -> str:
     clauses: list[str] = []
     if start and end and ds.date_field:
-        clauses.append(f'"{ds.date_field}" BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)')
-        params.extend([start.isoformat(), end.isoformat()])
+        if use_rollup:
+            clauses.append(f'txn_month BETWEEN ? AND ?')
+            params.extend([start.strftime('%Y-%m'), end.strftime('%Y-%m')])
+        else:
+            clauses.append(f'"{ds.date_field}" BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)')
+            params.extend([start.isoformat(), end.isoformat()])
     for f in plan.filters:
         clauses.append(_filter_sql(ds, f, params))
     return " AND ".join(clauses) if clauses else "1=1"
@@ -98,10 +149,14 @@ def where_clause(plan: QueryPlan, start: date | None, end: date | None) -> tuple
 def build(plan: QueryPlan, start: date | None, end: date | None) -> tuple[str, list]:
     ds = DATASETS[plan.dataset]
     params: list = []
+    use_rollup = False
+    
+    if plan.dataset == "transactions" and _can_use_rollup(plan, ds):
+        use_rollup = True
 
     if plan.intent == "list":
         cols = ", ".join(f'"{c}"' for c in ds.default_columns)
-        where = _where(ds, plan, start, end, params)
+        where = _where(ds, plan, start, end, params, use_rollup=use_rollup)
         default_order = ds.date_field or ds.amount_field
         order = plan.sort.field if plan.sort and plan.sort.field in ds.field_map else default_order
         direction = plan.sort.dir.upper() if plan.sort else "DESC"
@@ -115,19 +170,27 @@ def build(plan: QueryPlan, start: date | None, end: date | None) -> tuple[str, l
     select_parts: list[str] = []
 
     if plan.intent == "trend":
-        select_parts.append(f'strftime("{ds.date_field}", \'%Y-%m\') AS "period"')
-        group_exprs.append(f'strftime("{ds.date_field}", \'%Y-%m\')')
+        if use_rollup:
+            select_parts.append(f'txn_month AS "period"')
+            group_exprs.append(f'txn_month')
+        else:
+            select_parts.append(f'strftime("{ds.date_field}", \'%Y-%m\') AS "period"')
+            group_exprs.append(f'strftime("{ds.date_field}", \'%Y-%m\')')
     for g in plan.group_by:
         c = _col(ds, g)
         select_parts.append(f"{c} AS {c}")
         group_exprs.append(c)
 
     metrics = plan.metrics or [Metric()]
-    select_parts.extend(_metric_expr(ds, m) for m in metrics)
-    select_parts.append('count(*) AS "record_count"')
+    select_parts.extend(_metric_expr(ds, m, use_rollup=use_rollup) for m in metrics)
+    if use_rollup:
+        select_parts.append('sum(record_count) AS "record_count"')
+    else:
+        select_parts.append('count(*) AS "record_count"')
 
-    where = _where(ds, plan, start, end, params)
-    sql = f"SELECT {', '.join(select_parts)} FROM {ds.view} WHERE {where}"
+    where = _where(ds, plan, start, end, params, use_rollup=use_rollup)
+    view_name = "v_rollup_monthly" if use_rollup else ds.view
+    sql = f"SELECT {', '.join(select_parts)} FROM {view_name} WHERE {where}"
     if group_exprs:
         sql += " GROUP BY " + ", ".join(group_exprs)
         if plan.intent == "trend":
