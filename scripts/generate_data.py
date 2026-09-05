@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app import views  # noqa: E402
+from app.encryption import encrypt_series, enabled as enc_enabled, generate_key  # noqa: E402
+from app import config  # noqa: E402
 
 SEED = 42
 
@@ -238,6 +240,30 @@ def main() -> None:
     banks = build_banks()
     accounts = build_accounts(rng, args.accounts, args.entities)
 
+    # Auto-generate an encryption key if one is not already set
+    if not config.ENCRYPTION_KEY:
+        key = generate_key()
+        env_path = ROOT / ".env"
+        if env_path.exists():
+            text = env_path.read_text(encoding="utf-8")
+            if "ENCRYPTION_KEY" not in text:
+                with open(env_path, "a", encoding="utf-8") as f:
+                    f.write(f"\nENCRYPTION_KEY={key}\n")
+        else:
+            env_path.write_text(f"ENCRYPTION_KEY={key}\n", encoding="utf-8")
+        config.ENCRYPTION_KEY = key
+        # Re-initialise the cipher with the new key
+        import app.encryption as _enc
+        _enc._enabled = None
+        _enc._cipher = None
+        print(f"  Generated AES-256-SIV key -> .env")
+
+    if enc_enabled():
+        print("  Encrypting account_number and utr_number (AES-256-SIV) ...")
+        accounts["account_number"] = encrypt_series(accounts["account_number"])
+    else:
+        print("  Encryption disabled (no ENCRYPTION_KEY in .env)")
+
     db_path = Path(args.db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     if db_path.exists():
@@ -254,6 +280,8 @@ def main() -> None:
     while written < args.transactions:
         size = min(args.chunk, args.transactions - written)
         chunk = build_transactions(rng, accounts, size, start, end, id_offset=written)
+        if enc_enabled():
+            chunk["utr_number"] = encrypt_series(chunk["utr_number"])
         con.register("tmp_df", chunk)
         if written == 0:
             con.execute("CREATE OR REPLACE TABLE transaction AS SELECT * FROM tmp_df")

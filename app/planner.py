@@ -108,7 +108,8 @@ RULES
 - "monthly", "over time", "trend" => intent "trend".
 - "compare to", "vs last month", "how does that compare" => compare_to_previous true.
 - Use period.kind "month" with period.value "YYYY-MM" for a named month.
-- If the question needs a field that is not listed, use intent "unsupported".
+- **SECURITY**: If the user asks to unmask, decrypt, or show raw full account numbers, UTRs, or passwords, use intent "unsupported" and put a security refusal in "clarification".
+- If the question needs a field that is not listed in the schema, use intent "unsupported".
 - If it is genuinely ambiguous, use intent "clarify" and put the question in "clarification".
 - A follow-up question inherits filters/period from previous_plan unless it overrides them.
 - Output ONLY the JSON object.
@@ -348,6 +349,13 @@ def rule_plan(question: str, previous: QueryPlan | None = None) -> QueryPlan:
 
     if FUTURE_WORDS.search(ql):
         plan.intent = "unsupported"
+        return plan
+        
+    # Explicitly catch privacy/PII abuse requests so the rule parser doesn't
+    # fallback to a default sum.
+    if re.search(r"\b(unmask\w*|full account|exact account|raw account|real account|decrypt\w*)\b", ql):
+        plan.intent = "unsupported"
+        plan.clarification = "For security reasons, I do not have access to full, unmasked account numbers or UTRs. All sensitive data is encrypted at rest and masked in memory."
         return plan
 
     if BALANCE_WORDS.search(ql):

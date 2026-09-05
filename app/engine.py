@@ -99,7 +99,7 @@ def ask(question: str, session_id: str | None = None) -> dict:
         return _refusal(session, question, text, "clarify", usage, ["The question was ambiguous."])
 
     if plan.intent == "unsupported":
-        text = f"That is outside what this dataset can answer. {CAPABILITIES}"
+        text = plan.clarification or f"That is outside what this dataset can answer. {CAPABILITIES}"
         return _refusal(session, question, text, "unsupported", usage,
                         ["The question cannot be answered from the available schema."])
 

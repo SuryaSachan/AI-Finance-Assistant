@@ -44,3 +44,7 @@ LLM_ROW_BUDGET = _int("LLM_ROW_BUDGET", 25)
 CURRENCY = "INR"
 CURRENCY_SYMBOL = "\u20b9"
 COMPANY = "TransBnk demo entity"
+
+# AES-256-SIV encryption key (base64-encoded, 512-bit).
+# Set to "" or omit to disable encryption (fields pass through as plaintext).
+ENCRYPTION_KEY = (os.getenv("ENCRYPTION_KEY") or "").strip()
