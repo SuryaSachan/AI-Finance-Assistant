@@ -48,3 +48,8 @@ COMPANY = "TransBnk demo entity"
 # AES-256-SIV encryption key (base64-encoded, 512-bit).
 # Set to "" or omit to disable encryption (fields pass through as plaintext).
 ENCRYPTION_KEY = (os.getenv("ENCRYPTION_KEY") or "").strip()
+
+# MySQL Data Sync configuration
+MYSQL_URI = (os.getenv("MYSQL_URI") or "").strip()
+MYSQL_AES_KEY = (os.getenv("MYSQL_AES_KEY") or "").strip()
+MYSQL_AES_MODE = (os.getenv("MYSQL_AES_MODE") or "GCM").strip().upper()

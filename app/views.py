@@ -180,6 +180,46 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
         LEFT JOIN {b['table']} bk ON am.bank_code = bk.{b['bank_code']}
         """
     )
+    
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE rollup_monthly AS
+        SELECT 
+            account_id,
+            strftime(transaction_date, '%Y-%m') AS txn_month,
+            transaction_type,
+            counterparty,
+            sum(amount) AS sum_amount,
+            count(*) AS record_count,
+            min(amount) AS min_amount,
+            max(amount) AS max_amount
+        FROM txn_enriched
+        GROUP BY account_id, txn_month, transaction_type, counterparty
+        """
+    )
+
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW v_rollup_monthly AS
+        SELECT
+            r.account_id,
+            r.txn_month,
+            r.transaction_type,
+            r.counterparty,
+            r.sum_amount,
+            r.record_count,
+            r.min_amount,
+            r.max_amount,
+            am.account_number_masked,
+            am.entity_id,
+            am.program_id,
+            am.bank_code,
+            bk.{b['bank_name']}   AS bank_name
+        FROM rollup_monthly r
+        LEFT JOIN account_masked am ON r.account_id = am.account_id
+        LEFT JOIN {b['table']} bk ON am.bank_code = bk.{b['bank_code']}
+        """
+    )
 
     # Counterparty list used for entity resolution and for refusing unknown names.
     con.execute(
