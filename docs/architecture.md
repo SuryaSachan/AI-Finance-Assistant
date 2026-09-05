@@ -5,36 +5,34 @@
 ```mermaid
 flowchart TD
     U[User question<br/>plain language] --> API[FastAPI /api/ask]
-    API --> CTX[Conversation state<br/>last plan + last 4 turns]
-    CTX --> P{Planner}
+    API --> CTX[Conversation state<br/>last plan + last 8 turns]
+    CTX --> P[Planner: planner.py / rule_planner.py<br/>Rule Parser & LLM Fallback]
 
-    P -->|tier 1| L1[Small LLM, JSON mode<br/>question to QueryPlan]
-    L1 --> V[Schema validator<br/>fields, aggs, ops whitelist]
-    V -->|rejected| L2[tier 2: one repair round<br/>validator errors fed back]
-    L2 --> V
-    V -->|still invalid or LLM down| R[tier 3: deterministic<br/>rule parser]
-    R --> V
+    P -->|Post-Parse Guardrails| G1[Post-Parse Guardrail<br/>Strip obsolete UUIDs & date filters]
+    G1 --> OOR{Out-of-Range Guardrail<br/>periods.py vs db.data_span}
+    OOR -->|Outside Bounds| REF1[Instant Refusal:<br/>'Data available 01 Apr 2024 to 05 Sep 2026']
+    OOR -->|Valid Period| E[Entity resolution<br/>Fuzzy match vs counterparty list]
 
-    V --> E[Entity resolution<br/>n-gram fuzzy match vs<br/>real counterparty list]
-    E -->|no match| REF[Refusal:<br/>'X is not in the data']
-    E --> D[Business defaults<br/>debit/credit framing<br/>always surfaced as assumptions]
-    D --> T[Period resolver<br/>last_month to 2026-08-01..2026-08-31]
-    T --> SQL[SQL builder<br/>parameterised, whitelist-only]
-    SQL --> DB[(DuckDB<br/>v_transactions / v_accounts)]
+    E -->|No match| REF2[Refusal:<br/>'X is not in the dataset']
+    E --> T[SQL builder & Whitelist<br/>app/sql_builder.py]
+    T --> DB[(DuckDB Engine<br/>v_transactions / v_accounts<br/>AES-256-SIV Decrypted Views)]
 
     DB --> AGG[Computed result<br/>rows + grand totals + record count]
     AGG --> CMP[Comparison engine<br/>previous period]
-    AGG --> AN[Anomaly detector<br/>z-score vs counterparty history]
+    AGG --> AN{Period ≤ 45 days?}
+    AN -->|Yes| ZS[Anomaly Detector: anomalies.py<br/>z-score vs 13-month baseline]
+    AN -->|No| DET
 
-    AGG --> DET[Deterministic answer<br/>template built from SQL output]
-    DET --> N[Narrator LLM<br/>gets ONLY computed facts]
-    N --> G{Number guardrail<br/>every numeric token<br/>traced to a computed value}
-    G -->|all verified| OUT[Answer + table + confidence]
-    G -->|any unverified| DET2[Discard model wording,<br/>ship deterministic answer]
+    AGG --> DET[Deterministic answer payload]
+    ZS --> DET
+    CMP --> DET
+    DET --> N[Narrator LLM<br/>Gets ONLY computed facts & numbers]
+    N --> G2{Number Guardrail: app/answer.py<br/>Every numeric token<br/>traced to execution payload}
+    G2 -->|All verified| OUT[Answer + table + confidence]
+    G2 -->|Any unverified| DET2[Discard model wording,<br/>ship deterministic answer]
     DET2 --> OUT
-    AN --> OUT
-    CMP --> OUT
-    REF --> OUT
+    REF1 --> OUT
+    REF2 --> OUT
     OUT --> UI[Chat UI<br/>answer, breakdown table,<br/>'How I got this', CSV/Excel]
 ```
 
@@ -67,15 +65,15 @@ flowchart TD
 | --- | --- |
 | `app/schema_catalog.py` | Datasets, fields, enums, allowed aggregations/operators. Drives prompt + validation. |
 | `app/derivations.py` | Counterparty, channel, reconciliation and masking SQL — the derived layer. |
-| `app/views.py` | Builds `v_transactions` / `v_accounts` from `bank` / `account` / `transaction`. |
-| `app/plan_models.py` | Pydantic `QueryPlan` — the only interface the LLM has to the data. |
-| `app/planner.py` | 3-tier NL → plan, entity resolution, business assumptions. |
-| `app/periods.py` | Symbolic period → concrete date range, and previous-period arithmetic. |
-| `app/sql_builder.py` | Plan → parameterised SQL. |
-| `app/executor.py` | Runs the query, grand totals, comparison, supporting records. |
-| `app/anomalies.py` | z-score call-outs against each counterparty's trailing 12-month history. |
-| `app/answer.py` | Deterministic answer, narration, number guardrail, confidence scoring. |
-| `app/engine.py` | Orchestration, refusals, multi-turn session state. |
+| `app/views.py` | Builds `v_transactions` / `v_accounts` with AES-256-SIV deterministic encryption for PII fields. |
+| `app/plan_models.py` | Pydantic `QueryPlan` — the structured AST interface between intent and execution. |
+| `app/planner.py` | Dual-engine intent planner (rule parser + LLM), post-parse guardrails & entity resolution. |
+| `app/periods.py` | Symbolic period → concrete date range, dataset date bounds validation. |
+| `app/sql_builder.py` | Plan → parameterised SQL with strict schema whitelist. |
+| `app/executor.py` | Runs the query in DuckDB, grand totals, comparison, supporting records. |
+| `app/anomalies.py` | Pure SQL z-score anomaly detector against 13-month trailing baseline (for periods ≤45 days). |
+| `app/answer.py` | Deterministic answer, LLM narration, strict number verification guardrail. |
+| `app/engine.py` | Main orchestration, out-of-range date guardrails, refusals, multi-turn session state. |
 | `app/main.py` | FastAPI endpoints + static chat UI + CSV/Excel export. |
 | `web/` | Zero-build chat UI (no CDN, works offline). |
 | `evals/` | Ground-truth benchmark: NL answer vs SQL executed directly. |
