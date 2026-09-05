@@ -79,6 +79,7 @@ class LLMClient:
         try:
             if self.provider == "ollama":
                 r = self._client.get(f"{self.base_url}/api/tags", timeout=5)
+                self._healthy = r.status_code < 500
             elif self.provider == "sarvam":
                 headers = {"api-subscription-key": config.LLM_API_KEY} if config.LLM_API_KEY else {}
                 # Sarvam hasn't published a standard /v1/models endpoint yet in some versions,
