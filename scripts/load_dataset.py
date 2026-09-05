@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 from app import views  # noqa: E402
 from app.derivations import RECONCILIATION_DEFINITION  # noqa: E402
 from app.schema_catalog import DATASETS  # noqa: E402
+from app.encryption import encrypt, enabled as enc_enabled  # noqa: E402
 
 READERS = {
     ".csv": "read_csv_auto('{p}', sample_size=-1)",
@@ -206,6 +207,20 @@ def main() -> int:
         return 0
 
     overrides = yaml.safe_load(Path(args.mapping).read_text(encoding="utf-8")) or {}
+
+    # ── Encrypt sensitive columns at rest ──────────────────────────
+    if enc_enabled():
+        import duckdb as _duckdb
+        con.create_function("encrypt_field", encrypt, [_duckdb.typing.VARCHAR], _duckdb.typing.VARCHAR)
+        for tbl, col in [("account", "account_number"), ("transaction", "utr_number")]:
+            try:
+                con.execute(f'UPDATE {tbl} SET {col} = encrypt_field(CAST({col} AS VARCHAR)) WHERE {col} IS NOT NULL')
+                print(f"  Encrypted {tbl}.{col} (AES-256-SIV)")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  Could not encrypt {tbl}.{col}: {str(exc).splitlines()[0]}")
+    else:
+        print("  Encryption disabled (no ENCRYPTION_KEY in .env)")
+
     print("\nDeriving counterparty / channel / reconciliation and building views ...")
     print(f"  reconciliation rule: {RECONCILIATION_DEFINITION}")
     try:

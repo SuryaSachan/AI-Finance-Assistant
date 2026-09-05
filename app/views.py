@@ -6,12 +6,17 @@ query time stays a plain scan.
 
 Both the demo data generator and the real-dataset loader call `build()`, so the
 derivations are guaranteed identical whichever path created the database.
+
+When AES-256-SIV encryption is enabled, account_number and utr_number are
+stored as ciphertext in the raw tables. Python UDFs registered here handle
+transparent decryption when building the views.
 """
 from __future__ import annotations
 
 import duckdb
 
 from .derivations import channel_sql, counterparty_sql, masked_account_sql, reconciliation_sql
+from .encryption import decrypt, enabled as enc_enabled
 
 DEFAULT_COLUMNS: dict[str, dict[str, str]] = {
     "transaction": {
@@ -54,6 +59,21 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
     c = merge_columns(overrides)
     t, a, b = c["transaction"], c["account"], c["bank"]
 
+    # ── Register Python UDF for transparent decryption ──────────────
+    if enc_enabled():
+        con.create_function("decrypt_field", decrypt, [duckdb.typing.VARCHAR], duckdb.typing.VARCHAR)
+
+        # When encrypted: decrypt utr_number before checking reconciliation status
+        recon_expr = reconciliation_sql(
+            t["transaction_reference_id"],
+            f"decrypt_field({t['utr_number']})",
+        )
+        # When encrypted: decrypt account_number before masking
+        mask_acct_expr = masked_account_sql(f"decrypt_field(ac.{a['account_number']})")
+    else:
+        recon_expr = reconciliation_sql(t["transaction_reference_id"], t["utr_number"])
+        mask_acct_expr = masked_account_sql("ac." + a["account_number"])
+
     con.execute(
         f"""
         CREATE OR REPLACE TABLE txn_enriched AS
@@ -67,7 +87,7 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
             CAST({t['transaction_reference_id']} AS VARCHAR)   AS reference_id,
             {counterparty_sql(t['description'])}               AS counterparty_raw,
             {channel_sql(t['description'])}                    AS channel,
-            {reconciliation_sql(t['transaction_reference_id'], t['utr_number'])} AS reconciliation_status
+            {recon_expr}                                       AS reconciliation_status
         FROM {t['table']}
         """
     )
@@ -111,7 +131,7 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
             e.transaction_id, e.transaction_date, e.transaction_type, e.amount,
             e.counterparty, e.channel, e.description, e.reconciliation_status, e.reference_id,
             e.account_id,
-            {masked_account_sql('ac.' + a['account_number'])} AS account_number_masked,
+            {mask_acct_expr} AS account_number_masked,
             ac.{a['entity_id']}   AS entity_id,
             ac.{a['program_id']}  AS program_id,
             ac.{a['bank_code']}   AS bank_code,
@@ -127,7 +147,7 @@ def build(con: duckdb.DuckDBPyConnection, overrides: dict | None = None) -> None
         CREATE OR REPLACE VIEW v_accounts AS
         SELECT
             ac.{a['account_id']} AS account_id,
-            {masked_account_sql('ac.' + a['account_number'])} AS account_number_masked,
+            {mask_acct_expr} AS account_number_masked,
             ac.{a['entity_id']}          AS entity_id,
             ac.{a['program_id']}         AS program_id,
             CAST(ac.{a['available_balance']} AS DOUBLE) AS available_balance,
