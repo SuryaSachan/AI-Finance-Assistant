@@ -1,4 +1,5 @@
 """FastAPI application: chat API + static chat UI."""
+# Reloaded with live MySQL dataset
 from __future__ import annotations
 
 import io

@@ -6,6 +6,10 @@ from cryptography.hazmat.backends import default_backend
 
 from app import config
 
+MYSQL_URI="mysql+pymysql://tiby:tiby@10.20.16.135:29047/tiby_hackathon"
+# MYSQL_AES_KEY=your_encryption_key_here
+MYSQL_AES_MODE="GCM"
+
 def get_mysql_key() -> bytes | None:
     key_str = config.MYSQL_AES_KEY
     if not key_str:

@@ -105,6 +105,7 @@ RULES
 - "unreconciled"/"not reconciled"/"unmatched" => filter reconciliation_status = unreconciled.
 - A named company or person is a counterparty: filter {{"field":"counterparty","op":"eq","value":"<NAME>"}}.
 - Balance questions => dataset "accounts" with metric sum of available_balance. Accounts have no dates.
+- Account count questions ("how many accounts", "number of accounts", "total accounts") => intent "aggregate", dataset "accounts", metrics [{{"agg":"count_distinct","field":"account_id"}}], period {{"kind":"all"}}.
 - Questions asking WHICH/LIST records => intent "list".
 - "by vendor", "top payees", "breakdown by X" => intent aggregate with group_by.
 - "monthly", "over time", "trend" => intent "trend".
@@ -128,6 +129,8 @@ Q: How does that compare to the month before?
 {{"intent":"compare","dataset":"transactions","metrics":[{{"agg":"sum","field":"amount"}}],"group_by":[],"filters":[{{"field":"transaction_type","op":"eq","value":"debit"}}],"period":{{"kind":"last_month"}},"compare_to_previous":true,"limit":20}}
 Q: What is the total balance across HDFC accounts?
 {{"intent":"aggregate","dataset":"accounts","metrics":[{{"agg":"sum","field":"available_balance"}}],"group_by":[],"filters":[{{"field":"bank_code","op":"eq","value":"HDFC"}}],"period":{{"kind":"all"}},"compare_to_previous":false,"limit":20}}
+Q: How many accounts are there?
+{{"intent":"aggregate","dataset":"accounts","metrics":[{{"agg":"count_distinct","field":"account_id"}}],"group_by":[],"filters":[],"period":{{"kind":"all"}},"compare_to_previous":false,"limit":20}}
 Q: Show UPI spend by month this year
 {{"intent":"trend","dataset":"transactions","metrics":[{{"agg":"sum","field":"amount"}}],"group_by":[],"filters":[{{"field":"transaction_type","op":"eq","value":"debit"}},{{"field":"channel","op":"eq","value":"UPI"}}],"period":{{"kind":"ytd"}},"compare_to_previous":false,"limit":24}}
 """
@@ -393,9 +396,9 @@ def rule_plan(question: str, previous: QueryPlan | None = None) -> QueryPlan:
         plan.clarification = "That looks like a database command rather than a question. I only answer natural-language questions about the finance data."
         return plan
 
-    if BALANCE_WORDS.search(ql):
+    if BALANCE_WORDS.search(ql) or (re.search(r"\baccounts?\b", ql) and not re.search(r"\btransaction|spend|spent|payment|payout|credit|debit\b", ql)):
         dataset = "accounts"
-    elif previous and not re.search(r"\btransaction|spend|spent|payment|payout|credit|debit", ql):
+    elif previous and not re.search(r"\btransaction|spend|spent|payment|payout|credit|debit\b", ql):
         dataset = plan.dataset
     else:
         dataset = "transactions"
@@ -418,7 +421,9 @@ def rule_plan(question: str, previous: QueryPlan | None = None) -> QueryPlan:
         plan.intent = "aggregate"
 
     if COUNT_WORDS.search(ql):
-        plan.metrics = [Metric(agg="count", field=ds.amount_field)]
+        count_field = "account_id" if plan.dataset == "accounts" else ds.amount_field
+        agg_type = "count_distinct" if plan.dataset == "accounts" else "count"
+        plan.metrics = [Metric(agg=agg_type, field=count_field)]
     elif AVG_WORDS.search(ql):
         plan.metrics = [Metric(agg="avg", field=ds.amount_field)]
     elif BOTTOM_WORDS.search(ql) and not plan.group_by:

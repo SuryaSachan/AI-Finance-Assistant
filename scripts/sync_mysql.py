@@ -41,7 +41,7 @@ def main():
     for table_name in tables_to_sync:
         print(f"Syncing table: {table_name}...")
         try:
-            df = pd.read_sql(f"SELECT * FROM {table_name}", engine)
+            df = pd.read_sql(f"SELECT * FROM `{table_name}`", engine)
             
             if table_name == "account" and "account_number" in df.columns:
                 print("  -> Decrypting heavily secured account_number column")

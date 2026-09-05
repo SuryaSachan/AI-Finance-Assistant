@@ -26,6 +26,7 @@ that were already computed from the company's database.
 
 Rules:
 - ALWAYS format money amounts with the currency symbol ₹ and Indian comma grouping (e.g. ₹7,04,41,50,133.60). Use the pre-formatted values in totals_formatted.
+- For counts, quantities, or number of accounts/transactions/records, format as plain integers with commas (e.g. 5,000 or 10,000,000). NEVER use currency symbols (₹) or decimals (.00) for counts!
 - Never output raw unformatted numbers like 7044150133.6 for money.
 - Never calculate, estimate or round to an ungrounded number.
 - 2-3 short sentences. Plain language. No markdown tables, no bullet lists, no preamble.
@@ -43,6 +44,25 @@ class Answer:
 
 
 # ------------------------------------------------------------------ formatting
+def is_count_metric(name_or_agg: str) -> bool:
+    s = (name_or_agg or "").lower()
+    return (
+        s in ("count", "count_distinct", "records", "record_count")
+        or s.startswith("count_")
+        or s.startswith("count(")
+        or s.endswith("_count")
+        or "record_count" in s
+    )
+
+
+def format_val(v: float | int | None, metric_key_or_agg: str = "") -> str:
+    if v is None:
+        return "n/a"
+    if is_count_metric(metric_key_or_agg):
+        return f"{int(round(v)):,}"
+    return money(v)
+
+
 def money(v: float | int | None) -> str:
     if v is None:
         return "n/a"
@@ -135,9 +155,9 @@ def deterministic_answer(ex: Execution, pr: PlanResult) -> str:
         peak = max(ex.rows, key=lambda r: r.get(key) or 0)
         return (
             f"{metric_label(plan).capitalize()} by month for {period}{where_txt}, across "
-            f"{n:,} records totalling {money(total)}. It ran from {money(first.get(key))} in "
-            f"{first.get('period')} to {money(last.get(key))} in {last.get('period')}, peaking at "
-            f"{money(peak.get(key))} in {peak.get('period')}."
+            f"{n:,} records totalling {format_val(total, primary.agg)}. It ran from {format_val(first.get(key), key)} in "
+            f"{first.get('period')} to {format_val(last.get(key), key)} in {last.get('period')}, peaking at "
+            f"{format_val(peak.get(key), key)} in {peak.get('period')}."
         )
 
     if plan.intent == "list":
@@ -152,19 +172,20 @@ def deterministic_answer(ex: Execution, pr: PlanResult) -> str:
         g = plan.group_by[0]
         key = primary.name if primary.name in ex.rows[0] else "record_count"
         top = ex.rows[: min(3, len(ex.rows))]
-        listed = "; ".join(f"{r.get(g)} {money(r.get(key))}" for r in top)
+        listed = "; ".join(f"{r.get(g)} {format_val(r.get(key), key)}" for r in top)
         return (
             f"{('For ' + period) if period else 'Across the whole dataset'}{where_txt},"
-            f" {metric_label(plan)} was {money(total)} across {n:,} records. "
+            f" {metric_label(plan)} was {format_val(total, primary.agg)} across {n:,} records. "
             f"Broken down by {g.replace('_', ' ')}, the top entries are: {listed}."
         )
 
-    if primary.agg == "count":
-        return f"There are {int(total or n):,} {ds.label}{(' for ' + period) if period else ''}{where_txt}."
+    if primary.agg in ("count", "count_distinct"):
+        count_val = total if total is not None else n
+        return f"There are {int(count_val):,} {ds.label}{(' for ' + period) if period else ''}{where_txt}."
 
     return (
         f"{('For ' + period) if period else 'Across the whole dataset'}{where_txt},"
-        f" {metric_label(plan)} was {money(total)}, computed over {n:,} matching records."
+        f" {metric_label(plan)} was {format_val(total, primary.agg)}, computed over {n:,} matching records."
     )
 
 
@@ -240,7 +261,7 @@ def facts_payload(ex: Execution, pr: PlanResult, anomalies: list[dict]) -> dict:
         "metric": metric_label(plan),
         "matching_record_count": ex.total_records,
         "totals": {k: v for k, v in ex.totals.items()},
-        "totals_formatted": {k: money(v) for k, v in ex.totals.items()},
+        "totals_formatted": {k: format_val(v, k) for k, v in ex.totals.items()},
         "currency_symbol": config.CURRENCY_SYMBOL,
     }
     if ex.rows:
@@ -278,6 +299,15 @@ def narrate(question: str, ex: Execution, pr: PlanResult, anomalies: list[dict],
     # Uniformity guarantee: if the narrator emitted raw floats for totals without the currency symbol, format them
     for k, val in ex.totals.items():
         if isinstance(val, (int, float)) and val > 0:
+            if is_count_metric(k) or is_count_metric(ex.plan.metrics[0].agg):
+                # Clean up any currency symbol or decimals accidentally attached by the model to a count
+                int_val = int(round(val))
+                fmt_cnt = f"{int_val:,}"
+                for cand in [fmt_cnt, str(int_val)]:
+                    pattern = rf"[₹$€]\s?{re.escape(cand)}(?:\.0+)?(?!\d)"
+                    text = re.sub(pattern, fmt_cnt, text)
+                continue
+
             formatted_val = money(val)
             for r in [f"{val:.1f}", f"{val:.2f}", f"{val:.0f}", str(val)]:
                 pattern = rf"(?<![₹$€\d]){re.escape(r)}(?!\d)"
