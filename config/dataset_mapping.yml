@@ -1,78 +1,40 @@
 # ---------------------------------------------------------------------------
-# Mapping from the *provided* dataset to the three views the assistant queries.
+# Column mapping from the provided export to the official schema names.
 #
-# Workflow tomorrow:
+# The assistant expects three tables - bank, account, transaction - exactly as
+# in the schema document. If the export you are given uses different table or
+# column names, override them here; every unlisted name keeps its default.
+#
+# Workflow:
 #   1. python scripts/load_dataset.py --inspect --input path/to/dataset
 #        -> prints every file, its table name and its real column names
-#   2. edit the `fields:` expressions below to point at those column names
+#   2. adjust the names below
 #   3. python scripts/load_dataset.py --input path/to/dataset
-#        -> imports the raw files, builds the views, and validates them
-#
-# Each value on the right is any DuckDB SQL expression over the tables named in
-# `from`. Use CAST/COALESCE/CASE freely to normalise types and vocabulary.
-# A field left as `null` is reported as missing but does not break the app.
+#        -> imports, derives counterparty/channel/reconciliation, builds the
+#           views, and validates them against app/schema_catalog.py
 # ---------------------------------------------------------------------------
 
-v_transactions:
-  from: >
-    raw_transactions t
-    LEFT JOIN raw_vendors v ON t.vendor_id = v.vendor_id
-    LEFT JOIN raw_chart_of_accounts a ON t.account_code = a.account_code
-  fields:
-    txn_id: t.txn_id
-    txn_date: CAST(t.txn_date AS DATE)
-    posted_date: CAST(t.posted_date AS DATE)
-    vendor_id: t.vendor_id
-    vendor_name: COALESCE(v.vendor_name, 'Unassigned / Internal')
-    category: t.category
-    department: t.department
-    cost_center: t.cost_center
-    account_code: t.account_code
-    account_name: a.account_name
-    account_type: a.account_type
-    description: t.description
-    invoice_id: t.invoice_id
-    amount: CAST(t.amount AS DOUBLE)
-    direction: lower(t.direction)
-    payment_method: t.payment_method
-    status: lower(t.status)
-    reconciliation_status: lower(t.reconciliation_status)
-    reconciled_date: CAST(t.reconciled_date AS DATE)
+transaction:
+  table: transaction
+  transaction_id: transaction_id
+  account_id: account_id
+  transaction_date: transaction_date
+  transaction_type: transaction_type
+  description: description
+  transaction_amount: transaction_amount
+  transaction_reference_id: transaction_reference_id
+  utr_number: utr_number
 
-v_vendor_payouts:
-  from: >
-    raw_vendor_payouts p
-    LEFT JOIN raw_vendors v ON p.vendor_id = v.vendor_id
-  fields:
-    payout_id: p.payout_id
-    payout_date: CAST(p.payout_date AS DATE)
-    vendor_id: p.vendor_id
-    vendor_name: v.vendor_name
-    category: v.category
-    amount: CAST(p.amount AS DOUBLE)
-    status: lower(p.status)
-    method: p.method
-    invoice_count: p.invoice_count
-    reference: p.reference
-    reconciliation_status: lower(p.reconciliation_status)
+account:
+  table: account
+  account_id: account_id
+  entity_id: entity_id
+  account_number: account_number
+  program_id: program_id
+  available_balance: available_balance
+  bank_code: bank_code
 
-v_bank_lines:
-  from: raw_bank_lines b
-  fields:
-    bank_line_id: b.bank_line_id
-    value_date: CAST(b.value_date AS DATE)
-    bank_account: b.bank_account
-    description: b.description
-    amount: CAST(b.amount AS DOUBLE)
-    direction: lower(b.direction)
-    matched_txn_id: b.matched_txn_id
-    match_status: lower(b.match_status)
-
-# The vendor master must exist as a table called `vendors` with a
-# `vendor_name` column - entity resolution and refusals read from it.
-vendors:
-  from: raw_vendors v
-  fields:
-    vendor_id: v.vendor_id
-    vendor_name: v.vendor_name
-    category: v.category
+bank:
+  table: bank
+  bank_code: bank_code
+  bank_name: bank_name

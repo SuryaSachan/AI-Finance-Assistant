@@ -15,16 +15,16 @@ flowchart TD
     V -->|still invalid or LLM down| R[tier 3: deterministic<br/>rule parser]
     R --> V
 
-    V --> E[Entity resolution<br/>fuzzy match vs vendor list<br/>+ enum snapping]
+    V --> E[Entity resolution<br/>n-gram fuzzy match vs<br/>real counterparty list]
     E -->|no match| REF[Refusal:<br/>'X is not in the data']
-    E --> D[Business defaults<br/>direction=debit, exclude void<br/>always surfaced as assumptions]
+    E --> D[Business defaults<br/>debit/credit framing<br/>always surfaced as assumptions]
     D --> T[Period resolver<br/>last_month to 2026-08-01..2026-08-31]
     T --> SQL[SQL builder<br/>parameterised, whitelist-only]
-    SQL --> DB[(DuckDB<br/>transactions / payouts / bank lines)]
+    SQL --> DB[(DuckDB<br/>v_transactions / v_accounts)]
 
     DB --> AGG[Computed result<br/>rows + grand totals + record count]
     AGG --> CMP[Comparison engine<br/>previous period]
-    AGG --> AN[Anomaly detector<br/>z-score vs vendor history]
+    AGG --> AN[Anomaly detector<br/>z-score vs counterparty history]
 
     AGG --> DET[Deterministic answer<br/>template built from SQL output]
     DET --> N[Narrator LLM<br/>gets ONLY computed facts]
@@ -45,7 +45,7 @@ flowchart TD
 | Understand the question | LLM (3B) | Language is what models are good at. |
 | Choose dataset, filters, grouping, period | LLM, constrained to a JSON schema | The output space is tiny and validatable. |
 | Resolve dates | Python (`app/periods.py`) | `last month` must be exact, not "probably August". |
-| Resolve vendor / enum names | RapidFuzz vs the real vendor table | The model cannot invent a counterparty. |
+| Resolve counterparty / enum names | RapidFuzz vs the real counterparty list | The model cannot invent a payee. |
 | Build SQL | Python (`app/sql_builder.py`) | Identifiers come from a whitelist, literals are bound parameters. |
 | Filter, group, aggregate | DuckDB | Arithmetic is exact and reproducible. |
 | Phrase the answer | LLM (3B) | Only reads pre-computed facts. |
@@ -53,24 +53,27 @@ flowchart TD
 
 ## 3. Grounding invariants
 
-1. **Whitelist-only SQL.** `schema_catalog.py` is the single source of truth. A field the model invents is stripped by the validator before SQL is built, and the correction is shown to the user.
+1. **Whitelist-only SQL.** `app/schema_catalog.py` is the single source of truth. A field the model invents is stripped by the validator before SQL is built, and the correction is shown to the user.
 2. **No literal interpolation.** Every value is a bound parameter. This also removes SQL injection as a class of bug.
 3. **Read-only database.** The DuckDB connection is opened with `read_only=True`.
-4. **Deterministic answer always exists.** The templated answer is generated from the SQL result before the LLM is called; the model's wording is an optional upgrade, never a dependency.
-5. **Verify before display.** Numeric tokens in the model's wording are parsed (including `$`, `,`, `%`, `k`/`M` suffixes) and matched against every value in the result set, grand totals, comparison figures and the user's own numbers, within a 0.5 % tolerance. One mismatch discards the whole sentence.
-6. **Refuse rather than approximate.** Unknown vendor, unsupported question, forward-looking question or zero matching rows all produce an explicit "there is no figure to report" answer.
+4. **Sensitive columns are unreachable.** `account_number` and `utr_number` are not in the catalog at all — the views expose only a masked account number, and the UTR never leaves the database even if the model asks for it.
+5. **Deterministic answer always exists.** The templated answer is generated from the SQL result before the LLM is called; the model's wording is an optional upgrade, never a dependency.
+6. **Verify before display.** Numeric tokens in the model's wording are parsed (including `₹`, `,`, `%`, `k`/`M` suffixes) and matched against every value in the result set, grand totals, comparison figures and the user's own numbers, within a 0.5 % tolerance. One mismatch discards the whole sentence.
+7. **Refuse rather than approximate.** Unknown counterparty, unsupported question, forward-looking question or zero matching rows all produce an explicit "there is no figure to report" answer.
 
 ## 4. Components
 
 | Path | Responsibility |
 | --- | --- |
 | `app/schema_catalog.py` | Datasets, fields, enums, allowed aggregations/operators. Drives prompt + validation. |
+| `app/derivations.py` | Counterparty, channel, reconciliation and masking SQL — the derived layer. |
+| `app/views.py` | Builds `v_transactions` / `v_accounts` from `bank` / `account` / `transaction`. |
 | `app/plan_models.py` | Pydantic `QueryPlan` — the only interface the LLM has to the data. |
 | `app/planner.py` | 3-tier NL → plan, entity resolution, business assumptions. |
 | `app/periods.py` | Symbolic period → concrete date range, and previous-period arithmetic. |
 | `app/sql_builder.py` | Plan → parameterised SQL. |
 | `app/executor.py` | Runs the query, grand totals, comparison, supporting records. |
-| `app/anomalies.py` | z-score call-outs against each vendor's trailing 12-month history. |
+| `app/anomalies.py` | z-score call-outs against each counterparty's trailing 12-month history. |
 | `app/answer.py` | Deterministic answer, narration, number guardrail, confidence scoring. |
 | `app/engine.py` | Orchestration, refusals, multi-turn session state. |
 | `app/main.py` | FastAPI endpoints + static chat UI + CSV/Excel export. |
@@ -79,22 +82,38 @@ flowchart TD
 
 ## 5. Data model
 
+The provided schema, unchanged:
+
 ```mermaid
 erDiagram
-    VENDORS ||--o{ TRANSACTIONS : "vendor_id"
-    VENDORS ||--o{ VENDOR_PAYOUTS : "vendor_id"
-    CHART_OF_ACCOUNTS ||--o{ TRANSACTIONS : "account_code"
-    TRANSACTIONS ||--o| BANK_LINES : "matched_txn_id"
+    BANK ||--o{ ACCOUNT : "bank_code"
+    ACCOUNT ||--o{ TRANSACTION : "account_id"
 
-    VENDORS { string vendor_id string vendor_name string category string country string status }
-    CHART_OF_ACCOUNTS { string account_code string account_name string account_type }
-    TRANSACTIONS { string txn_id date txn_date string vendor_id decimal amount string direction string status string reconciliation_status }
-    VENDOR_PAYOUTS { string payout_id date payout_date string vendor_id decimal amount string status string reconciliation_status }
-    BANK_LINES { string bank_line_id date value_date decimal amount string match_status string matched_txn_id }
+    BANK { string bank_code PK string bank_name }
+    ACCOUNT { string account_id PK string entity_id string account_number string bank_code FK int program_id decimal available_balance }
+    TRANSACTION { string transaction_id PK string account_id FK timestamp transaction_date string transaction_type string description decimal transaction_amount string transaction_reference_id string utr_number }
 ```
 
-Queries run against three flattened views (`v_transactions`, `v_vendor_payouts`, `v_bank_lines`) so the plan schema stays flat and joins never depend on the model.
+Queries run against two flattened views so the plan schema stays flat and joins never depend on the model:
+
+| View | Built from | Notes |
+| --- | --- | --- |
+| `v_transactions` | `txn_enriched` + `account` + `bank` | adds `counterparty`, `channel`, `reconciliation_status`, `account_number_masked` |
+| `v_accounts` | `account` + `bank` | balances; no date column, so time filters are rejected with an explanation |
+
+### Derived fields, and why
+
+The schema has no counterparty column and no reconciliation column, but both are core to the brief. Rather than invent data, each is derived from real columns with one shared, documented definition (`app/derivations.py`):
+
+| Field | Definition | Surfaced as |
+| --- | --- | --- |
+| `counterparty` | Longest run of capitalised words in `description`, after removing rail/bank noise tokens. Spelling variants (`SELECTION MOBILE` / `SELECTIONMOBILE`) are folded onto one canonical name. | "Counterparty names are parsed out of the free-text bank narration." |
+| `channel` | Rail detected from the narration prefix: UPI / NEFT / IMPS / RTGS / FT / CHEQUE / ACH / ATM / CHARGES. | shown as a normal field |
+| `reconciliation_status` | `reconciled` when the row carries a `transaction_reference_id` **or** a `utr_number`; `unreconciled` when it carries neither. | Stated in the answer's assumptions every time it is filtered. |
+| `account_number_masked` | `XXXXXX` + last 4 digits. | the raw column is not in the catalog at all |
+
+The reference-vs-UTR question the schema doc raises is answered explicitly: a bare "reference number" hits `transaction_reference_id`, the plaintext searchable column. `utr_number` is never exposed or queried.
 
 ## 6. Scale
 
-DuckDB is columnar and vectorised; the aggregate queries used here are scans with a date predicate. The prototype ships with 250 k transactions and regenerates to 20 M with one flag (`--transactions 20000000`), with sub-second aggregates on a laptop. Date and vendor indexes are created at build time.
+DuckDB is columnar and vectorised; the aggregate queries used here are scans with a date predicate. Derived columns are materialised once into `txn_enriched` at load time, not recomputed per query. The prototype ships with 250 k transactions and regenerates to 20 M with one flag (`--transactions 20000000`). Date and counterparty indexes are created at build time.

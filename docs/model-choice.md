@@ -17,7 +17,7 @@ The usual reason a finance chatbot needs a frontier model is that the model is b
 | Explain the computed result in a sentence | LLM | small |
 | Guarantee the numbers | Verification guardrail | none |
 
-A 3 B instruct model with constrained JSON decoding is reliable at slot-filling over a 3-table, ~20-field schema. It is not reliable at multi-join SQL or arithmetic — so we never ask it to do either.
+A 3 B instruct model with constrained JSON decoding is reliable at slot-filling over a 2-view, ~20-field schema. It is not reliable at multi-join SQL or arithmetic — so we never ask it to do either.
 
 ## The tiers
 
@@ -59,7 +59,7 @@ Prompt cost is kept low deliberately: the schema is rendered compactly (~350 tok
 
 ## Accuracy against the sample set
 
-`python evals/run_eval.py` runs 20 questions end to end and compares the reported figure against ground-truth SQL executed directly on DuckDB (0.5 % tolerance), plus structural checks on dataset, intent, grouping and filters. Two of the twenty are adversarial and must be **refused**: an unknown vendor and a forward-looking forecast question.
+`python evals/run_eval.py` runs 20 questions end to end and compares the reported figure against ground-truth SQL executed directly on DuckDB (0.5 % tolerance), plus structural checks on dataset, intent, grouping and filters. Two of the twenty are adversarial and must be **refused**: an unknown counterparty and a forward-looking forecast question.
 
 Current results are in [sample-questions.md](sample-questions.md) and `evals/results.csv`.
 

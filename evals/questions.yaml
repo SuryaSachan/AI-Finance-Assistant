@@ -9,13 +9,15 @@
 #   {anchor} {lm_start} {lm_end} {pm_start} {pm_end} {ytd_start} {year}
 
 - id: q01
-  question: How much did we spend on vendor payouts last month?
-  dataset: vendor_payouts
+  question: How much did we pay out last month?
+  dataset: transactions
   intent: aggregate
+  must_filter: [transaction_type=debit]
   check: value
   expect_sql: >
-    SELECT sum(amount) FROM v_vendor_payouts
-    WHERE payout_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    SELECT sum(amount) FROM v_transactions
+    WHERE transaction_type = 'debit'
+      AND transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
 
 - id: q02
   question: Which transactions are still unreconciled?
@@ -31,11 +33,12 @@
   session: s1
   dataset: transactions
   intent: aggregate
+  must_filter: [transaction_type=debit]
   check: value
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE direction = 'debit' AND status <> 'void'
-      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    WHERE transaction_type = 'debit'
+      AND transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
 
 - id: q04
   question: How does that compare to the month before?
@@ -45,35 +48,39 @@
   check: comparison_previous
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE direction = 'debit' AND status <> 'void'
-      AND txn_date BETWEEN DATE '{pm_start}' AND DATE '{pm_end}'
+    WHERE transaction_type = 'debit'
+      AND transaction_date BETWEEN DATE '{pm_start}' AND DATE '{pm_end}'
 
 - id: q05
-  question: Show me the top 5 vendors by spend this year
+  question: Show me the top 5 counterparties by spend this year
   dataset: transactions
   intent: aggregate
+  group_by: [counterparty]
   check: value
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE direction = 'debit' AND status <> 'void'
-      AND txn_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
+    WHERE transaction_type = 'debit'
+      AND transaction_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
 
 - id: q06
-  question: How many payouts are still pending?
-  dataset: vendor_payouts
-  must_filter: [status=pending]
-  check: count
-  expect_sql: >
-    SELECT count(*) FROM v_vendor_payouts WHERE status = 'pending'
-
-- id: q07
-  question: How much did we spend on Cloud & Hosting last month?
+  question: How much money did we receive last month?
   dataset: transactions
+  must_filter: [transaction_type=credit]
   check: value
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE direction = 'debit' AND status <> 'void' AND category = 'Cloud & Hosting'
-      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    WHERE transaction_type = 'credit'
+      AND transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+
+- id: q07
+  question: How much did we spend over UPI last month?
+  dataset: transactions
+  must_filter: [channel=UPI, transaction_type=debit]
+  check: value
+  expect_sql: >
+    SELECT sum(amount) FROM v_transactions
+    WHERE transaction_type = 'debit' AND channel = 'UPI'
+      AND transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
 
 - id: q08
   question: What is the total value of unreconciled transactions last month?
@@ -82,49 +89,48 @@
   check: value
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE reconciliation_status = 'unreconciled' AND status <> 'void'
-      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    WHERE reconciliation_status = 'unreconciled'
+      AND transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
 
 - id: q09
-  question: Break down spend by department last month
+  question: Break down spend by bank last month
   dataset: transactions
   intent: aggregate
-  group_by: [department]
+  group_by: [bank_name]
   check: value
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE direction = 'debit' AND status <> 'void'
-      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    WHERE transaction_type = 'debit'
+      AND transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
 
 - id: q10
-  question: Show marketing spend by month year to date
+  question: Show NEFT spend by month year to date
   dataset: transactions
   intent: trend
+  must_filter: [channel=NEFT]
   check: value
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE direction = 'debit' AND status <> 'void' AND category = 'Marketing'
-      AND txn_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
+    WHERE transaction_type = 'debit' AND channel = 'NEFT'
+      AND transaction_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
 
 - id: q11
-  question: How much did we pay Acme Software last month?
+  question: How much did we pay TATA CAPITAL LIMITED last month?
   dataset: transactions
-  must_filter: [vendor_name=Acme Software]
+  must_filter: [counterparty=TATA CAPITAL LIMITED]
   check: value
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE direction = 'debit' AND status <> 'void' AND vendor_name = 'Acme Software'
-      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    WHERE transaction_type = 'debit' AND counterparty = 'TATA CAPITAL LIMITED'
+      AND transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
 
 - id: q12
-  question: How many transactions were disputed last month?
+  question: How many transactions did we have last month?
   dataset: transactions
-  must_filter: [reconciliation_status=disputed]
   check: count
   expect_sql: >
     SELECT count(*) FROM v_transactions
-    WHERE reconciliation_status = 'disputed' AND status <> 'void'
-      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    WHERE transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
 
 - id: q13
   question: What was the average transaction amount last month?
@@ -132,49 +138,49 @@
   check: value
   expect_sql: >
     SELECT avg(amount) FROM v_transactions
-    WHERE status <> 'void'
-      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    WHERE transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
 
 - id: q14
-  question: List unmatched bank statement lines
-  dataset: bank_lines
-  intent: list
-  must_filter: [match_status=unmatched]
-  check: count
+  question: What is the total balance across HDFC accounts?
+  dataset: accounts
+  must_filter: [bank_code=HDFC]
+  check: value
   expect_sql: >
-    SELECT count(*) FROM v_bank_lines WHERE match_status = 'unmatched'
+    SELECT sum(available_balance) FROM v_accounts WHERE bank_code = 'HDFC'
 
 - id: q15
-  question: Total vendor payouts year to date
-  dataset: vendor_payouts
+  question: How much did we pay in bank charges this year?
+  dataset: transactions
   check: value
   expect_sql: >
-    SELECT sum(amount) FROM v_vendor_payouts
-    WHERE payout_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
+    SELECT sum(amount) FROM v_transactions
+    WHERE transaction_type = 'debit' AND channel = 'CHARGES'
+      AND transaction_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
 
 - id: q16
-  question: Which vendors did we spend the most with last month?
+  question: Which counterparties did we pay the most last month?
   dataset: transactions
-  group_by: [vendor_name]
+  group_by: [counterparty]
   check: value
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE direction = 'debit' AND status <> 'void'
-      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    WHERE transaction_type = 'debit'
+      AND transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
 
 - id: q17
-  question: How much revenue did we book last month?
+  question: Break down spend by channel this year
   dataset: transactions
+  group_by: [channel]
   check: value
   expect_sql: >
     SELECT sum(amount) FROM v_transactions
-    WHERE direction = 'credit' AND status <> 'void'
-      AND txn_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'
+    WHERE transaction_type = 'debit'
+      AND transaction_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
 
 - id: q18
   question: How much did we spend with Globex Corporation last month?
   expect_refusal: true
-  note: Globex Corporation is not in the vendor list; the assistant must refuse.
+  note: Globex Corporation appears in no narration; the assistant must refuse.
 
 - id: q19
   question: What will our spend be next quarter?
@@ -182,10 +188,11 @@
   note: Forecasting is outside the dataset; the assistant must not invent a number.
 
 - id: q20
-  question: Show payouts that failed this year
-  dataset: vendor_payouts
-  must_filter: [status=failed]
+  question: How many unreconciled transactions were there last month?
+  dataset: transactions
+  must_filter: [reconciliation_status=unreconciled]
   check: count
   expect_sql: >
-    SELECT count(*) FROM v_vendor_payouts
-    WHERE status = 'failed' AND payout_date BETWEEN DATE '{ytd_start}' AND DATE '{anchor}'
+    SELECT count(*) FROM v_transactions
+    WHERE reconciliation_status = 'unreconciled'
+      AND transaction_date BETWEEN DATE '{lm_start}' AND DATE '{lm_end}'

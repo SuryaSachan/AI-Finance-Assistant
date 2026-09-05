@@ -1,10 +1,11 @@
-"""Generate a realistic synthetic finance dataset into DuckDB.
+"""Generate a stand-in dataset in the *official* schema (bank / account / transaction).
 
-Usage:
-    python scripts/generate_data.py                     # ~250k transactions
-    python scripts/generate_data.py --transactions 5000000 --csv
+Descriptions follow the narration formats in the provided sample data, so the
+counterparty and channel derivations are exercised the same way they will be on
+the real export.
 
-The generator is seeded, so the dataset is reproducible.
+    python scripts/generate_data.py                       # ~250k transactions
+    python scripts/generate_data.py --transactions 20000000 --csv
 """
 from __future__ import annotations
 
@@ -20,345 +21,220 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from app.schema_catalog import (  # noqa: E402
-    CATEGORIES,
-    DATASETS,
-    DEPARTMENTS,
-    PAYMENT_METHODS,
-)
+from app import views  # noqa: E402
 
 SEED = 42
 
-VENDOR_STEMS = [
-    "Acme", "Northgate", "Bluepeak", "Corewave", "Delta Ridge", "Everline", "Fathom",
-    "Granite", "Helios", "Ironclad", "Juniper", "Kestrel", "Lumen", "Meridian",
-    "Nimbus", "Orchid", "Pinnacle", "Quantum", "Redstone", "Summit", "Tessera",
-    "Umbra", "Vertex", "Waypoint", "Xenon", "Yardley", "Zephyr", "Atlas",
-    "Beacon", "Cobalt", "Dovetail", "Emberly", "Foxglove", "Glasshouse",
-    "Harborview", "Inkwell", "Jetstream", "Kilnwood", "Larkspur", "Marlow",
-]
-VENDOR_SUFFIX = {
-    "Software & SaaS": ["Software", "Systems", "Labs"],
-    "Cloud & Hosting": ["Cloud", "Hosting", "Infra"],
-    "Professional Services": ["Consulting", "Advisory", "Partners"],
-    "Marketing": ["Media", "Creative", "Agency"],
-    "Travel": ["Travel", "Voyages", "Mobility"],
-    "Facilities": ["Facilities", "Estates", "Services"],
-    "Logistics": ["Logistics", "Freight", "Supply Co"],
-    "Hardware": ["Hardware", "Devices", "Electronics"],
-    "Payroll Services": ["Payroll", "People Ops", "HRSolutions"],
-    "Utilities": ["Utilities", "Power", "Energy"],
-}
-
-ACCOUNTS = [
-    ("4000", "Product Revenue", "Revenue", None),
-    ("4100", "Services Revenue", "Revenue", None),
-    ("5000", "Software & Subscriptions", "Expense", "Software & SaaS"),
-    ("5010", "Cloud Infrastructure", "Expense", "Cloud & Hosting"),
-    ("5020", "Professional Fees", "Expense", "Professional Services"),
-    ("5030", "Marketing & Advertising", "Expense", "Marketing"),
-    ("5040", "Travel & Entertainment", "Expense", "Travel"),
-    ("5050", "Rent & Facilities", "Expense", "Facilities"),
-    ("5060", "Freight & Logistics", "Expense", "Logistics"),
-    ("5070", "IT Hardware", "Expense", "Hardware"),
-    ("5080", "Payroll Processing", "Expense", "Payroll Services"),
-    ("5090", "Utilities", "Expense", "Utilities"),
-    ("1000", "Operating Bank Account", "Asset", None),
-    ("2000", "Accounts Payable", "Liability", None),
+BANKS = [
+    ("HDFC", "HDFC BANK LIMITED"),
+    ("ICIC", "ICICI BANK LIMITED"),
+    ("SBIN", "STATE BANK OF INDIA"),
+    ("UTIB", "AXIS BANK LIMITED"),
+    ("KKBK", "KOTAK MAHINDRA BANK LIMITED"),
+    ("CNRB", "CANARA BANK"),
+    ("UBIN", "UNION BANK OF INDIA"),
+    ("AUBL", "AU SMALL FINANCE BANK LIMITED"),
+    ("TMBL", "TAMILNAD MERCANTILE BANK LIMITED"),
+    ("RATN", "RBL BANK LIMITED"),
 ]
 
+MERCHANTS = [
+    "SELECTION ELECTRONICS", "SELECTRICITY TWO PRIVATE LIMITED", "NAVYUG SELECTION",
+    "UMANG SELECTION", "SELECTION MOBILE", "SELECTIONMALIGAI", "RELIANCEDIGITAL RETAIL LTD",
+    "BAJAJ FINANCE LIMITED", "TATA CAPITAL LIMITED", "VODAFONE IDEA LIMITED",
+    "BHARTI AIRTEL LIMITED", "AMAZON SELLER SERVICES", "FLIPKART INTERNET PRIVATE",
+    "SWIGGY BUNDL TECHNOLOGIES", "ZOMATO LIMITED", "INDIAN OIL CORPORATION",
+    "ADANI ELECTRICITY MUMBAI", "TATA POWER COMPANY LIMITED", "MAHANAGAR GAS LIMITED",
+    "GODREJ PROPERTIES LIMITED", "ASIAN PAINTS LIMITED", "PIDILITE INDUSTRIES LIMITED",
+    "HAVELLS INDIA LIMITED", "VOLTAS LIMITED", "BLUE STAR LIMITED",
+    "CROMPTON GREAVES CONSUMER", "SUPREME INDUSTRIES LIMITED", "FINOLEX CABLES LIMITED",
+    "POLYCAB INDIA LIMITED", "KEI INDUSTRIES LIMITED", "ORIENT ELECTRIC LIMITED",
+    "SYMPHONY LIMITED", "WHIRLPOOL OF INDIA LIMITED", "IFB INDUSTRIES LIMITED",
+    "BATA INDIA LIMITED", "TRENT LIMITED", "SHOPPERS STOP LIMITED",
+    "VISHAL MEGA MART PRIVATE", "METRO CASH AND CARRY", "SPENCERS RETAIL LIMITED",
+    "MORE MEGASTORE PRIVATE", "DMART AVENUE SUPERMARTS", "STAR BAZAAR TRENT HYPERMARKET",
+    "ARVIND FASHIONS LIMITED", "RAYMOND LIFESTYLE LIMITED", "PAGE INDUSTRIES LIMITED",
+]
 
-def month_starts(start: date, end: date) -> list[date]:
-    out, cur = [], date(start.year, start.month, 1)
-    while cur <= end:
-        out.append(cur)
-        cur = date(cur.year + (cur.month == 12), (cur.month % 12) + 1, 1)
-    return out
+PEOPLE = [
+    "PARESH VIKRANT GHASE", "GAUTAM SINGH", "RAMESH KUMAR SHARMA", "PRIYA NAIR MENON",
+    "ANIL BABURAO PATIL", "SUNITA DEVI YADAV", "MOHAMMED IRFAN QURESHI", "DEEPAK RANJAN DAS",
+    "KAVITA SURESH IYER", "RAJESH MOHAN PILLAI", "NEHA SANJAY KULKARNI", "VIKRAM ADITYA RAO",
+]
+
+AREAS = ["DAHISAR EAST", "SAKET DELHI", "KORAMANGALA BLR", "ANNA NAGAR CHN", "SALT LAKE KOL",
+         "HITEC CITY HYD", "VASTRAPUR AHM", "KOTHRUD PUNE", "GOMTI NAGAR LKO", "RAJOURI GARDEN"]
+
+CHARGE_NARRATIONS = [
+    "IMPS charges", "NEFT Return Charges", "Cheque Deposits", "ATM WDL CHARGES",
+    "SMS ALERT CHARGES", "MIN BALANCE CHARGES", "RTGS PROCESSING FEE", "ACH DEBIT RETURN CHARGES",
+]
 
 
-def build_vendors(rng: np.random.Generator) -> pd.DataFrame:
+def build_banks() -> pd.DataFrame:
+    return pd.DataFrame(BANKS, columns=["bank_code", "bank_name"])
+
+
+def build_accounts(rng: np.random.Generator, n_accounts: int, n_entities: int) -> pd.DataFrame:
+    codes = [b[0] for b in BANKS]
     rows = []
-    for i, stem in enumerate(VENDOR_STEMS):
-        cat = CATEGORIES[i % len(CATEGORIES)]
-        suffix = VENDOR_SUFFIX[cat][i % len(VENDOR_SUFFIX[cat])]
+    for i in range(n_accounts):
         rows.append(
             {
-                "vendor_id": f"V{1000 + i}",
-                "vendor_name": f"{stem} {suffix}",
-                "category": cat,
-                "country": rng.choice(["US", "US", "US", "UK", "DE", "IN", "SG"]),
-                "status": "active" if i % 13 else "inactive",
-                "payment_terms": int(rng.choice([15, 30, 30, 45, 60])),
-                "onboarded_date": date(2021, 1, 1) + timedelta(days=int(rng.integers(0, 1200))),
-                # spend tier drives how big this vendor's transactions are
-                "tier": int(rng.choice([1, 1, 1, 2, 2, 3], p=[0.25, 0.2, 0.2, 0.15, 0.12, 0.08])),
+                "account_id": f"{i:08x}-0000-4000-8000-{rng.integers(0, 16**12):012x}",
+                "entity_id": f"e{i % n_entities:07x}-0000-4000-8000-{(i % n_entities):012x}",
+                "account_number": str(rng.integers(10**13, 10**14)),
+                "program_id": int(rng.choice([21, 4, 46], p=[0.5, 0.3, 0.2])),
+                "available_balance": round(float(rng.normal(2.5e7, 6e7)), 2),
+                "bank_code": codes[i % len(codes)],
             }
         )
     return pd.DataFrame(rows)
 
 
-def build_transactions(rng, vendors: pd.DataFrame, accounts: pd.DataFrame, n: int, start: date, end: date):
-    months = month_starts(start, end)
-    n_months = len(months)
+def _narrations(rng, n, merchant_idx, person_idx, kind, bank_codes, acct_numbers):
+    """Build bank-style narration strings matching the provided sample formats."""
+    merch = np.array(MERCHANTS)[merchant_idx]
+    ppl = np.array(PEOPLE)[person_idx]
+    area = rng.choice(AREAS, size=n)
+    ifsc = np.array([f"{c}000{d:04d}" for c, d in zip(bank_codes, rng.integers(1000, 3000, n))])
+    r1 = rng.integers(10**7, 10**8, n)
+    r2 = rng.integers(10**11, 10**12, n)
+    r3 = rng.integers(1000, 9999, n)
 
-    # gentle growth + seasonality so month-over-month comparisons are meaningful
-    trend = np.linspace(0.8, 1.35, n_months)
-    seasonality = 1 + 0.18 * np.sin(np.arange(n_months) / 12 * 2 * np.pi)
-    weights = trend * seasonality
-    weights = weights / weights.sum()
-
-    m_idx = rng.choice(n_months, size=n, p=weights)
-    month_start_ord = np.array([d.toordinal() for d in months])
-    month_len = np.array(
-        [
-            (
-                date(d.year + (d.month == 12), (d.month % 12) + 1, 1) - timedelta(days=1)
-            ).day
-            for d in months
-        ]
-    )
-    day_off = (rng.random(n) * month_len[m_idx]).astype(int)
-    ordinals = np.clip(month_start_ord[m_idx] + day_off, start.toordinal(), end.toordinal())
-    txn_dates = pd.to_datetime([date.fromordinal(int(o)) for o in ordinals])
-
-    # 8% of rows are revenue (no vendor); the rest are vendor spend
-    is_revenue = rng.random(n) < 0.08
-
-    v_weights = vendors["tier"].to_numpy(dtype=float) ** 2
-    v_weights = v_weights / v_weights.sum()
-    v_idx = rng.choice(len(vendors), size=n, p=v_weights)
-    vendor_id = vendors["vendor_id"].to_numpy()[v_idx]
-    vendor_cat = vendors["category"].to_numpy()[v_idx]
-    tier = vendors["tier"].to_numpy()[v_idx]
-
-    exp_accounts = accounts[accounts["account_type"] == "Expense"].set_index("category")
-    acc_code = np.array([exp_accounts.loc[c, "account_code"] for c in vendor_cat])
-    rev_codes = accounts[accounts["account_type"] == "Revenue"]["account_code"].to_numpy()
-
-    category = vendor_cat.copy()
-    vendor_id = vendor_id.astype(object)
-    acc_code = acc_code.astype(object)
-    vendor_id[is_revenue] = None
-    category[is_revenue] = "Revenue"
-    acc_code[is_revenue] = rng.choice(rev_codes, size=int(is_revenue.sum()))
-
-    base = np.exp(rng.normal(6.1, 1.0, size=n)) * (tier ** 1.6)
-    base = base * (1 + 0.35 * (m_idx / max(n_months - 1, 1)))
-    amount = np.round(np.where(is_revenue, base * 3.2, base), 2)
-
-    direction = np.where(is_revenue, "credit", "debit")
-    refund = (~is_revenue) & (rng.random(n) < 0.03)
-    direction[refund] = "credit"
-    amount[refund] = -np.round(amount[refund] * 0.4, 2)
-
-    status = rng.choice(["posted", "pending", "void"], size=n, p=[0.93, 0.055, 0.015])
-
-    # unreconciled skews heavily toward the most recent 45 days (realistic backlog)
-    recent = (end.toordinal() - ordinals) <= 45
-    p_unrec = np.where(recent, 0.42, 0.07)
-    unrec_roll = rng.random(n)
-    recon = np.where(unrec_roll < p_unrec, "unreconciled", "reconciled")
-    recon[(unrec_roll >= p_unrec) & (unrec_roll < p_unrec + 0.02)] = "disputed"
-    recon[status == "void"] = "unreconciled"
-
-    reconciled_ord = ordinals + rng.integers(1, 12, size=n)
-    reconciled_date = np.where(
-        recon == "reconciled",
-        pd.to_datetime([date.fromordinal(int(min(o, end.toordinal()))) for o in reconciled_ord]),
-        np.datetime64("NaT"),
-    )
-
-    dept = rng.choice(DEPARTMENTS, size=n)
-    df = pd.DataFrame(
-        {
-            "txn_id": [f"T{i:09d}" for i in range(1, n + 1)],
-            "txn_date": txn_dates,
-            "posted_date": pd.to_datetime(
-                [date.fromordinal(int(min(o + int(d), end.toordinal()))) for o, d in zip(ordinals, rng.integers(0, 4, n))]
-            ),
-            "vendor_id": vendor_id,
-            "category": category,
-            "department": dept,
-            "cost_center": [f"CC-{d[:3].upper()}-{i%7+1:02d}" for i, d in enumerate(dept)],
-            "account_code": acc_code,
-            "description": None,
-            "invoice_id": [f"INV-{i:08d}" for i in range(1, n + 1)],
-            "amount": amount,
-            "direction": direction,
-            "payment_method": rng.choice(PAYMENT_METHODS, size=n, p=[0.45, 0.15, 0.2, 0.05, 0.15]),
-            "status": status,
-            "reconciliation_status": recon,
-            "reconciled_date": reconciled_date,
-            "currency": "USD",
-        }
-    )
-    vname = vendors.set_index("vendor_id")["vendor_name"]
-    df["description"] = [
-        (f"{vname[v]} invoice settlement" if v else "Customer receipt")
-        for v in df["vendor_id"]
-    ]
-    return df
-
-
-def build_payouts(rng, vendors: pd.DataFrame, txns: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
-    """Vendor payment runs, derived from spend so totals stay coherent."""
-    spend = txns[(txns["direction"] == "debit") & txns["vendor_id"].notna()].copy()
-    spend["period"] = spend["txn_date"].dt.to_period("M")
-    grp = spend.groupby(["vendor_id", "period"], observed=True).agg(
-        total=("amount", "sum"), invoices=("txn_id", "count")
-    ).reset_index()
-
-    # split each vendor-month into 1-3 payout runs
-    splits = rng.integers(1, 4, size=len(grp))
-    rows = []
-    pid = 1
-    for (vid, period, total, inv), k in zip(grp.itertuples(index=False, name=None), splits):
-        parts = rng.dirichlet(np.ones(k))
-        for j in range(k):
-            pdate = period.to_timestamp().date() + timedelta(days=int(rng.integers(2, 27)))
-            if pdate > end:
-                pdate = end
-            rows.append(
-                {
-                    "payout_id": f"P{pid:08d}",
-                    "payout_date": pdate,
-                    "vendor_id": vid,
-                    "amount": round(float(total * parts[j]), 2),
-                    "invoice_count": max(1, int(inv * parts[j])),
-                    "method": None,
-                    "status": None,
-                    "reference": f"PAY-{pid:08d}",
-                    "reconciliation_status": None,
-                }
+    out = np.empty(n, dtype=object)
+    for i in range(n):
+        k = kind[i]
+        if k == 0:
+            out[i] = f"FT -  {r1[i]} -  {acct_numbers[i]} - {merch[i]}   {area[i]}"
+        elif k == 1:
+            out[i] = f"UPI-{merch[i]}-XXXXXX{r3[i]}-{ifsc[i]}-{r2[i]}-{r2[i]}"
+        elif k == 2:
+            out[i] = f"NEFT  - {ifsc[i]} - {r1[i]} - {acct_numbers[i]} - {merch[i]}"
+        elif k == 3:
+            out[i] = f"NEFT/{r2[i]}/{bank_codes[i]}/{ppl[i]}"
+        elif k == 4:
+            out[i] = (
+                f"IMPS/P2A/{r2[i]}/{bank_codes[i]}/{acct_numbers[i]}/00/INET/{r3[i]}/"
+                f"{merch[i].replace(' ', '')}/ZBFLCTP{r3[i]}L2PBL{r1[i]}/INWD48"
             )
-            pid += 1
-
-    df = pd.DataFrame(rows)
-    n = len(df)
-    df["method"] = rng.choice(PAYMENT_METHODS, size=n, p=[0.5, 0.2, 0.1, 0.05, 0.15])
-    df["payout_date"] = pd.to_datetime(df["payout_date"])
-    recent = (pd.Timestamp(end) - df["payout_date"]).dt.days <= 30
-    df["status"] = np.where(
-        recent & (rng.random(n) < 0.35),
-        rng.choice(["pending", "on_hold"], size=n, p=[0.8, 0.2]),
-        rng.choice(["paid", "paid", "paid", "failed"], size=n, p=[0.34, 0.33, 0.31, 0.02]),
-    )
-    df["reconciliation_status"] = np.where(
-        df["status"] != "paid",
-        "unreconciled",
-        rng.choice(["reconciled", "unreconciled", "disputed"], size=n, p=[0.9, 0.08, 0.02]),
-    )
-    df["currency"] = "USD"
-
-    # --- inject a handful of genuine anomalies for the anomaly-callout feature ---
-    if n > 50:
-        anomaly_rows = rng.choice(n, size=min(6, n // 500 + 4), replace=False)
-        df.loc[anomaly_rows, "amount"] = (df.loc[anomaly_rows, "amount"] * rng.uniform(6, 11, len(anomaly_rows))).round(2)
-    return df
-
-
-def build_bank_lines(rng, txns: pd.DataFrame, end: date) -> pd.DataFrame:
-    matched = txns[txns["reconciliation_status"] == "reconciled"].sample(
-        n=min(len(txns) // 3, 60000), random_state=SEED
-    )
-    m = pd.DataFrame(
-        {
-            "bank_line_id": [f"B{i:09d}" for i in range(1, len(matched) + 1)],
-            "value_date": matched["txn_date"].to_numpy(),
-            "bank_account": rng.choice(["OPERATING-1001", "PAYROLL-2002", "FX-3003"], size=len(matched), p=[0.75, 0.2, 0.05]),
-            "description": matched["description"].to_numpy(),
-            "amount": matched["amount"].to_numpy(),
-            "direction": matched["direction"].to_numpy(),
-            "matched_txn_id": matched["txn_id"].to_numpy(),
-            "match_status": "matched",
-        }
-    )
-    k = max(200, len(matched) // 40)
-    start_ord = end.toordinal() - 120
-    u = pd.DataFrame(
-        {
-            "bank_line_id": [f"B{i:09d}" for i in range(len(matched) + 1, len(matched) + k + 1)],
-            "value_date": pd.to_datetime([date.fromordinal(int(o)) for o in rng.integers(start_ord, end.toordinal() + 1, k)]),
-            "bank_account": rng.choice(["OPERATING-1001", "PAYROLL-2002", "FX-3003"], size=k),
-            "description": rng.choice(
-                ["BANK FEE", "FX ADJUSTMENT", "UNIDENTIFIED CREDIT", "CHARGEBACK", "INTEREST CREDIT"], size=k
-            ),
-            "amount": np.round(rng.normal(0, 4000, k), 2),
-            "direction": rng.choice(["debit", "credit"], size=k),
-            "matched_txn_id": None,
-            "match_status": "unmatched",
-        }
-    )
-    out = pd.concat([m, u], ignore_index=True)
-    out["currency"] = "USD"
+        elif k == 5:
+            out[i] = f"IMPS OW/{r2[i]}/{ppl[i].title()}/{bank_codes[i]}/{acct_numbers[i]}"
+        elif k == 6:
+            ref = f"RATNR5{r2[i]}"
+            out[i] = f"R/{ref}/ZBFLCTP{r3[i]}PBL{r1[i]}//{merch[i]}/{ref} /{merch[i]}"
+        elif k == 7:
+            out[i] = f"RTGS  - {ifsc[i]} - {r1[i]} - {merch[i]}"
+        else:
+            out[i] = CHARGE_NARRATIONS[i % len(CHARGE_NARRATIONS)]
     return out
 
 
-def data_dictionary() -> pd.DataFrame:
-    rows = []
-    for ds in DATASETS.values():
-        for f in ds.fields:
-            rows.append(
-                {
-                    "dataset": ds.key,
-                    "view": ds.view,
-                    "field": f.name,
-                    "type": f.kind,
-                    "description": f.desc,
-                    "allowed_values": ", ".join(f.values) if f.values else None,
-                }
-            )
-    return pd.DataFrame(rows)
+def build_transactions(rng, accounts: pd.DataFrame, n: int, start: date, end: date) -> pd.DataFrame:
+    n_months = (end.year - start.year) * 12 + (end.month - start.month) + 1
+    months = [pd.Timestamp(start) + pd.DateOffset(months=i) for i in range(n_months)]
+    trend = np.linspace(0.75, 1.4, n_months)
+    seasonality = 1 + 0.2 * np.sin(np.arange(n_months) / 12 * 2 * np.pi)
+    weights = trend * seasonality
+    weights /= weights.sum()
+
+    m_idx = rng.choice(n_months, size=n, p=weights)
+    starts = np.array([m.date().toordinal() for m in months])
+    lengths = np.array([m.days_in_month for m in months])
+    ordinals = np.clip(starts[m_idx] + (rng.random(n) * lengths[m_idx]).astype(int),
+                       start.toordinal(), end.toordinal())
+    dates = pd.to_datetime([date.fromordinal(int(o)) for o in ordinals])
+    seconds = rng.integers(0, 86400, n)
+    timestamps = dates + pd.to_timedelta(seconds, unit="s")
+
+    acct_idx = rng.choice(len(accounts), size=n, p=_account_weights(rng, len(accounts)))
+    account_id = accounts["account_id"].to_numpy()[acct_idx]
+    acct_numbers = accounts["account_number"].to_numpy()[acct_idx]
+    bank_codes = accounts["bank_code"].to_numpy()[acct_idx]
+
+    kind = rng.choice(9, size=n, p=[0.14, 0.20, 0.16, 0.09, 0.10, 0.08, 0.07, 0.06, 0.10])
+    merchant_idx = rng.choice(len(MERCHANTS), size=n, p=_zipf(rng, len(MERCHANTS)))
+    person_idx = rng.integers(0, len(PEOPLE), n)
+    description = _narrations(rng, n, merchant_idx, person_idx, kind, bank_codes, acct_numbers)
+
+    txn_type = np.where(rng.random(n) < 0.34, "credit", "debit")
+    txn_type[kind == 8] = "debit"  # charges are always outflows
+
+    scale = 1 + merchant_idx / len(MERCHANTS)
+    amount = np.round(np.exp(rng.normal(9.6, 1.25, n)) * scale, 2)
+    amount[txn_type == "credit"] = np.round(amount[txn_type == "credit"] * 2.4, 2)
+    amount[kind == 8] = np.round(rng.uniform(11.8, 590, int((kind == 8).sum())), 2)
+
+    # reference / UTR presence drives the derived reconciliation status
+    recent = (end.toordinal() - ordinals) <= 45
+    p_missing_ref = np.where(recent, 0.55, 0.18)
+    has_ref = rng.random(n) > p_missing_ref
+    has_utr = (rng.random(n) < 0.55) & (kind != 8)
+
+    reference = np.where(
+        has_ref,
+        np.array([f"{c}H{v:011d}" if k in (0, 2, 7) else f"S{v}" for c, v, k in
+                  zip(bank_codes, rng.integers(10**7, 10**8, n), kind)]),
+        None,
+    )
+    utr = np.where(
+        has_utr,
+        np.array([f"jhI5nAdyb1qOEjmcB3Jv{a:08x}{b:08x}" for a, b in
+                  zip(rng.integers(0, 2**31, n), rng.integers(0, 2**31, n))]),
+        None,
+    )
+
+    df = pd.DataFrame(
+        {
+            "transaction_id": [f"{i:08x}-0000-4000-9000-{i:012x}" for i in range(1, n + 1)],
+            "account_id": account_id,
+            "transaction_date": timestamps,
+            "transaction_type": txn_type,
+            "description": description,
+            "transaction_amount": amount,
+            "transaction_reference_id": reference,
+            "utr_number": utr,
+        }
+    )
+
+    # a few genuine outliers so the anomaly call-out has something real to find
+    if n > 500:
+        picks = rng.choice(n, size=max(4, n // 40000), replace=False)
+        df.loc[picks, "transaction_amount"] = (df.loc[picks, "transaction_amount"] * rng.uniform(25, 60, len(picks))).round(2)
+    return df
 
 
-VIEWS_SQL = """
-CREATE OR REPLACE VIEW v_transactions AS
-SELECT t.txn_id, CAST(t.txn_date AS DATE) AS txn_date, CAST(t.posted_date AS DATE) AS posted_date,
-       t.vendor_id,
-       COALESCE(v.vendor_name, 'Unassigned / Internal') AS vendor_name,
-       t.category, t.department, t.cost_center,
-       t.account_code, a.account_name, a.account_type,
-       t.description, t.invoice_id, t.amount, t.direction, t.payment_method,
-       t.status, t.reconciliation_status, CAST(t.reconciled_date AS DATE) AS reconciled_date, t.currency
-FROM transactions t
-LEFT JOIN vendors v USING (vendor_id)
-LEFT JOIN chart_of_accounts a USING (account_code);
+def _account_weights(rng, k: int) -> np.ndarray:
+    w = rng.gamma(2.0, 1.0, k)
+    return w / w.sum()
 
-CREATE OR REPLACE VIEW v_vendor_payouts AS
-SELECT p.payout_id, CAST(p.payout_date AS DATE) AS payout_date, p.vendor_id, v.vendor_name, v.category,
-       p.amount, p.status, p.method, p.invoice_count, p.reference,
-       p.reconciliation_status, p.currency
-FROM vendor_payouts p
-LEFT JOIN vendors v USING (vendor_id);
 
-CREATE OR REPLACE VIEW v_bank_lines AS
-SELECT bank_line_id, CAST(value_date AS DATE) AS value_date, bank_account, description, amount, direction,
-       matched_txn_id, match_status, currency
-FROM bank_lines;
-"""
+def _zipf(rng, k: int) -> np.ndarray:
+    w = 1 / (np.arange(1, k + 1) ** 0.7)
+    rng.shuffle(w)
+    return w / w.sum()
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--transactions", type=int, default=250_000)
+    ap.add_argument("--accounts", type=int, default=40)
+    ap.add_argument("--entities", type=int, default=25)
     ap.add_argument("--months", type=int, default=30)
     ap.add_argument("--end", type=str, default=date.today().isoformat())
     ap.add_argument("--db", type=str, default=str(ROOT / "data" / "finance.duckdb"))
-    ap.add_argument("--csv", action="store_true", help="also export CSV extracts")
+    ap.add_argument("--csv", action="store_true")
     args = ap.parse_args()
 
     end = date.fromisoformat(args.end)
-    start = date(end.year, end.month, 1) - timedelta(days=31 * (args.months - 1))
-    start = date(start.year, start.month, 1)
+    first = pd.Timestamp(date(end.year, end.month, 1)) - pd.DateOffset(months=args.months - 1)
+    start = first.date()
     rng = np.random.default_rng(SEED)
 
     print(f"Generating {args.transactions:,} transactions from {start} to {end} ...")
-    vendors = build_vendors(rng)
-    accounts = pd.DataFrame(ACCOUNTS, columns=["account_code", "account_name", "account_type", "category"])
-    txns = build_transactions(rng, vendors, accounts, args.transactions, start, end)
-    payouts = build_payouts(rng, vendors, txns, start, end)
-    bank = build_bank_lines(rng, txns, end)
-    ddict = data_dictionary()
+    banks = build_banks()
+    accounts = build_accounts(rng, args.accounts, args.entities)
+    txns = build_transactions(rng, accounts, args.transactions, start, end)
 
     db_path = Path(args.db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -366,36 +242,30 @@ def main() -> None:
         db_path.unlink()
 
     con = duckdb.connect(str(db_path))
-    for name, df in [
-        ("vendors", vendors.drop(columns=["tier"])),
-        ("chart_of_accounts", accounts),
-        ("transactions", txns),
-        ("vendor_payouts", payouts),
-        ("bank_lines", bank),
-        ("data_dictionary", ddict),
-    ]:
+    for name, df in [("bank", banks), ("account", accounts), ("transaction", txns)]:
         con.register("tmp_df", df)
         con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM tmp_df")
         con.unregister("tmp_df")
-        print(f"  {name:<20} {len(df):>10,} rows")
+        print(f"  {name:<14} {len(df):>12,} rows")
 
-    con.execute("CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions(txn_date)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_txn_vendor ON transactions(vendor_id)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_payout_date ON vendor_payouts(payout_date)")
-    con.execute(VIEWS_SQL)
-    con.close()
+    print("Deriving counterparty / channel / reconciliation and building views ...")
+    views.build(con)
+    cp = con.execute("SELECT count(*) FROM counterparties").fetchone()[0]
+    unknown = con.execute(
+        "SELECT round(100.0 * sum(CASE WHEN counterparty = 'UNIDENTIFIED' THEN 1 ELSE 0 END) / count(*), 1) "
+        "FROM txn_enriched"
+    ).fetchone()[0]
+    print(f"  counterparties {cp:>12,} distinct   ({unknown}% of rows unidentified)")
 
     if args.csv:
         out = db_path.parent / "csv"
         out.mkdir(exist_ok=True)
-        vendors.drop(columns=["tier"]).to_csv(out / "vendors.csv", index=False)
-        accounts.to_csv(out / "chart_of_accounts.csv", index=False)
-        ddict.to_csv(out / "data_dictionary.csv", index=False)
-        txns.to_csv(out / "transactions.csv", index=False)
-        payouts.to_csv(out / "vendor_payouts.csv", index=False)
-        bank.to_csv(out / "bank_lines.csv", index=False)
+        banks.to_csv(out / "bank.csv", index=False)
+        accounts.to_csv(out / "account.csv", index=False)
+        txns.to_csv(out / "transaction.csv", index=False)
         print(f"CSV extracts written to {out}")
 
+    con.close()
     print(f"\nDone -> {db_path}")
 
 

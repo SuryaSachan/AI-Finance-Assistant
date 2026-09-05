@@ -21,7 +21,7 @@ Start on a clean session with the sidebar visible (record count, coverage, model
 
 ### 1. The headline question (30 s)
 
-> **How much did we spend on vendor payouts last month?**
+> **How much did we pay out last month?**
 
 Point at: the answer, the period badge, the source-record count, the token/latency badge.
 
@@ -33,7 +33,7 @@ Then open **"How I got this answer"** and scroll: assumptions applied, the plan 
 
 > **How does that compare to the month before?**
 
-No vendor repeated, no period repeated. Show the two-row comparison table and the delta.
+No counterparty repeated, no period repeated. Show the two-row comparison table and the delta.
 
 ### 3. The operational question (30 s)
 
@@ -41,11 +41,13 @@ No vendor repeated, no period repeated. Show the two-row comparison table and th
 
 Show the record list, then hit **Download Excel** — the finance user leaves with the working file, not a screenshot.
 
+Worth calling out here: this schema has no reconciliation column. Rather than invent one, the assistant derives it from whether a row carries a bank reference or a UTR, and **states that definition in the answer's assumptions every single time**. Same for counterparty names, which are parsed out of the free-text narration. Derived, documented, and visible — not assumed.
+
 ### 4. The refusals — the most important 60 seconds
 
 > **How much did we spend with Globex Corporation last month?**
 
-> "There is no vendor by that name, so there is no figure. Here are the closest real names."
+> "There is no counterparty by that name anywhere in the narrations, so there is no figure. Here are the closest real names."
 
 > **What will our spend be next quarter?**
 
@@ -61,7 +63,7 @@ Drop to a terminal:
 .\.venv\Scripts\python.exe scripts\selftest.py
 ```
 
-Walk the output. Check #2 stubs a model that says *"we spent exactly $42,000,000.00"* — a figure that is nowhere in the result set. The verifier catches it, the sentence is discarded, the computed answer ships instead, and confidence drops to medium.
+Walk the output. Check #2 stubs a model that says *"we paid out exactly Rs 42,000,000.00"* — a figure that is nowhere in the result set. The verifier catches it, the sentence is discarded, the computed answer ships instead, and confidence drops to medium. Check #5 shows that even when the model explicitly asks for `utr_number`, the column never reaches the query.
 
 Then:
 
@@ -81,7 +83,7 @@ If the LLM host is unavailable mid-demo, nothing breaks: the sidebar flips to *"
 
 **"What if the model picks the wrong filter?"** It is visible in the explain panel, and structural correctness (dataset, intent, grouping, filters) is asserted in the benchmark, not just the final number.
 
-**"Does it scale to 20 M rows?"** DuckDB, columnar, date- and vendor-indexed; regenerate with `--transactions 20000000`. Queries are scans with a date predicate.
+**"Does it scale to 20 M rows?"** DuckDB, columnar, date- and counterparty-indexed; derived columns are materialised once at load, not per query. Regenerate with `--transactions 20000000`.
 
 **"Why not just text-to-SQL?"** Free-form SQL from a small model is unvalidatable — you cannot prove the query means what the user asked. A fixed plan schema is checkable field by field, and it is what makes a 3 B model sufficient.
 

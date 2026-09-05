@@ -3,7 +3,12 @@ const messages = $("#messages");
 let sessionId = null;
 let busy = false;
 
-const MONEY_COLS = /amount|total|sum_|avg_|min_|max_|value|baseline/i;
+const MONEY_COLS = /amount|total|balance|sum_|avg_|min_|max_|value|baseline/i;
+const CURRENCY = "INR";
+
+function fmtMoney(v) {
+  return Number(v).toLocaleString("en-IN", { style: "currency", currency: CURRENCY, maximumFractionDigits: 2 });
+}
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -12,8 +17,7 @@ function esc(s) {
 
 function fmtCell(col, v) {
   if (v === null || v === undefined) return '<span style="color:#556">—</span>';
-  if (typeof v === "number" && MONEY_COLS.test(col))
-    return v.toLocaleString(undefined, { style: "currency", currency: "USD" });
+  if (typeof v === "number" && MONEY_COLS.test(col)) return fmtMoney(v);
   if (typeof v === "number") return v.toLocaleString();
   return esc(v);
 }
@@ -79,10 +83,8 @@ function render(el, d) {
       d.anomalies
         .map(
           (a) =>
-            `${esc(a.vendor_name)} at ${a.period_total.toLocaleString(undefined, {
-              style: "currency", currency: "USD" })} is ${a.times_baseline}× its ` +
-            `${a.history_months}-month average of ${a.baseline_monthly_avg.toLocaleString(undefined, {
-              style: "currency", currency: "USD" })} (z=${a.z_score})`
+            `${esc(a.entity)} at ${fmtMoney(a.period_total)} is ${a.times_baseline}× its ` +
+            `${a.history_months}-month average of ${fmtMoney(a.baseline_monthly_avg)} (z=${a.z_score})`
         )
         .join("; ") +
       `.</div>`;
@@ -205,7 +207,7 @@ function showWelcome() {
   messages.insertAdjacentHTML(
     "beforeend",
     `<div class="empty">
-      <h3>Ask anything about spend, payouts or reconciliation.</h3>
+      <h3>Ask anything about payments, counterparties, balances or reconciliation.</h3>
       <p>Answers are computed with SQL over the ledger and checked number-by-number before you see them.
          Follow-up questions keep the context — try “how does that compare to the month before?”</p>
      </div>`
@@ -222,7 +224,7 @@ async function boot() {
     const db = h.database || {};
     $("#st-data").textContent = h.status === "ok" ? "connected" : "missing";
     $("#st-records").textContent = db.transactions
-      ? `${Number(db.transactions).toLocaleString()} txns · ${Number(db.vendor_payouts).toLocaleString()} payouts`
+      ? `${Number(db.transactions).toLocaleString()} txns · ${Number(db.accounts).toLocaleString()} accounts`
       : "–";
     $("#st-span").textContent = db.date_from ? `${db.date_from} → ${db.date_to}` : "–";
     $("#st-model").textContent = h.llm.model;

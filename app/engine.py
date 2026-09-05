@@ -48,8 +48,9 @@ class SessionStore:
 sessions = SessionStore()
 
 CAPABILITIES = (
-    "I can answer questions about spend and transactions, vendor payouts, and reconciliation "
-    "status - filtered by vendor, category, department, account, payment method, status or date range."
+    "I can answer questions about transactions (money in and out), counterparties, banks, "
+    "payment channels, account balances and reconciliation - filtered by date range, "
+    "counterparty, bank, channel, program or account."
 )
 
 
@@ -84,17 +85,17 @@ def ask(question: str, session_id: str | None = None) -> dict:
     plan = pr.plan
 
     if pr.unknown_entity:
-        suggestions = [m[0] for m in process.extract(pr.unknown_entity, db.vendor_names(), limit=3)]
+        suggestions = [m[0] for m in process.extract(str(pr.unknown_entity).upper(), db.counterparty_names(), limit=3)]
         text = (
-            f'I could not find "{pr.unknown_entity}" anywhere in the finance data, so I have nothing to '
-            f"report for it and I will not guess a number. Closest names on file: "
+            f'I could not find "{pr.unknown_entity}" anywhere in the transaction narrations, so I have '
+            f"nothing to report for it and I will not guess a number. Closest names on file: "
             f"{', '.join(suggestions)}."
         )
         return _refusal(session, question, text, "no_data", usage,
                         [f'"{pr.unknown_entity}" does not exist in the dataset.'])
 
     if plan.intent == "clarify":
-        text = plan.clarification or "Could you narrow that down - which vendor, period or category do you mean?"
+        text = plan.clarification or "Could you narrow that down - which counterparty, period, bank or channel do you mean?"
         return _refusal(session, question, text, "clarify", usage, ["The question was ambiguous."])
 
     if plan.intent == "unsupported":

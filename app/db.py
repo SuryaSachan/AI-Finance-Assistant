@@ -46,34 +46,30 @@ def anchor_date() -> date:
     """The 'today' the assistant reasons against."""
     if config.ANCHOR_DATE:
         return date.fromisoformat(config.ANCHOR_DATE)
-    df = query(
-        "SELECT max(d) AS d FROM ("
-        " SELECT max(txn_date) d FROM transactions"
-        " UNION ALL SELECT max(payout_date) FROM vendor_payouts)"
-    )
-    value = df.iloc[0]["d"]
-    return pd.Timestamp(value).date()
+    df = query("SELECT max(transaction_date) AS d FROM txn_enriched")
+    return pd.Timestamp(df.iloc[0]["d"]).date()
 
 
 @lru_cache(maxsize=1)
-def vendor_names() -> tuple[str, ...]:
-    df = query("SELECT vendor_name FROM vendors ORDER BY vendor_name")
-    return tuple(df["vendor_name"].tolist())
+def counterparty_names() -> tuple[str, ...]:
+    """Known counterparties, used for entity resolution and for refusing unknown names."""
+    df = query("SELECT counterparty FROM counterparties ORDER BY txn_count DESC LIMIT 20000")
+    return tuple(df["counterparty"].tolist())
 
 
 @lru_cache(maxsize=1)
 def data_span() -> tuple[date, date]:
-    df = query("SELECT min(txn_date) a, max(txn_date) b FROM transactions")
+    df = query("SELECT min(transaction_date) a, max(transaction_date) b FROM txn_enriched")
     return pd.Timestamp(df.iloc[0]["a"]).date(), pd.Timestamp(df.iloc[0]["b"]).date()
 
 
 @lru_cache(maxsize=1)
 def stats() -> dict:
     df = query(
-        "SELECT (SELECT count(*) FROM transactions) AS transactions,"
-        " (SELECT count(*) FROM vendor_payouts) AS vendor_payouts,"
-        " (SELECT count(*) FROM bank_lines) AS bank_lines,"
-        " (SELECT count(*) FROM vendors) AS vendors"
+        "SELECT (SELECT count(*) FROM txn_enriched) AS transactions,"
+        " (SELECT count(*) FROM v_accounts) AS accounts,"
+        " (SELECT count(DISTINCT entity_id) FROM v_accounts) AS entities,"
+        " (SELECT count(*) FROM counterparties) AS counterparties"
     )
     row = df.iloc[0].to_dict()
     lo, hi = data_span()

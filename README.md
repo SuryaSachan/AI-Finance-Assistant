@@ -5,7 +5,7 @@ A conversational assistant that answers plain-language questions about finance d
 The design rule is simple: *the language model reads and writes English; SQL does the arithmetic; a verifier checks every digit before it reaches the user.*
 
 ```
-"How much did we spend on vendor payouts last month?"
+"How much did we pay out last month?"
   -> plan (3B model, JSON)  -> validate  -> SQL (built in Python)  -> DuckDB
   -> computed result -> narration -> number verification -> answer + breakdown + audit trail
 ```
@@ -66,7 +66,8 @@ Any OpenAI-compatible endpoint works too — set `LLM_PROVIDER=openai`, `LLM_BAS
 | **Explainability** | "How I got this answer" expands to interpretation, assumptions applied, plan corrections, the plan JSON, the SQL, guardrail status and sample records. |
 | **CSV / Excel export** *(good to have)* | Download the full, untruncated breakdown from any answer. |
 | **Confidence signalling** *(bonus)* | high / medium / low with the specific reasons that moved it. |
-| **Anomaly call-outs** *(bonus)* | A vendor whose period total is ≥2.5σ above its own 12-month baseline is flagged alongside the answer. |
+| **Anomaly call-outs** *(bonus)* | A counterparty whose period total is ≥2.5σ above its own 12-month baseline is flagged alongside the answer. |
+| **Sensitive data** | `account_number` is masked to its last 4 digits and `utr_number` is not exposed at all — neither column exists in the queryable catalog. |
 
 ---
 
@@ -76,9 +77,9 @@ Five independent mechanisms, each of which alone would stop a fabricated figure:
 
 1. **The model cannot express a number.** Its only output is a fixed-shape JSON plan — dataset, filters, grouping, period. There is no field in which a figure can be written.
 2. **The model cannot express a column.** Fields are validated against `app/schema_catalog.py`; anything invented is stripped before SQL is built, and the correction is shown to the user.
-3. **The model cannot express an entity.** Vendor and enum values are fuzzy-matched against the real vendor table. No match above threshold → the assistant says the entity does not exist and names the closest real ones.
+3. **The model cannot express an entity.** Counterparty and enum values are fuzzy-matched against the names that actually occur in the data. No match above threshold → the assistant says the entity does not exist and names the closest real ones.
 4. **The model cannot compute.** Dates are resolved in Python; filtering and aggregation happen in DuckDB over a read-only connection.
-5. **The model's wording is verified.** Every numeric token in the generated sentence — including `$`, `,`, `%`, `k`/`M` forms — is traced back to a value in the result set within 0.5 %. One unverifiable digit and the sentence is discarded in favour of the deterministic answer, the UI says so, and confidence drops.
+5. **The model's wording is verified.** Every numeric token in the generated sentence — including `₹`, `,`, `%`, `k`/`M` forms — is traced back to a value in the result set within 0.5 %. One unverifiable digit and the sentence is discarded in favour of the deterministic answer, the UI says so, and confidence drops.
 
 Plus: **zero rows → an explicit "there is no figure to report"**, never an estimate.
 
@@ -89,14 +90,14 @@ Plus: **zero rows → an explicit "there is no figure to report"**, never an est
 ## Sample questions
 
 ```
-How much did we spend on vendor payouts last month?
+How much did we pay out last month?
 Which transactions are still unreconciled?
 How does that compare to the month before?          <- follow-up, no context repeated
-Top 5 vendors by spend this year
-What did we pay Acme Software last quarter?
-Show marketing spend by month year to date
-How many payouts are still pending?
-How much did we spend with Globex Corporation?      <- refused: not a real vendor
+Top 5 counterparties by spend this year
+How much did we pay TATA CAPITAL LIMITED last month?
+Show NEFT spend by month year to date
+What is the total balance across HDFC accounts?
+How much did we spend with Globex Corporation?      <- refused: no such counterparty
 What will our spend be next quarter?                <- refused: not answerable from data
 ```
 
@@ -106,24 +107,43 @@ Full run with the assistant's actual answers and the ground-truth figures: [docs
 
 ## The data
 
-`scripts/generate_data.py` builds a seeded, reproducible dataset for one fictitious company in a single currency (USD):
+The app is built directly against the provided schema — `bank`, `account`, `transaction` — and queries two flattened views:
 
-| Table | Default rows | Contents |
+| View | Built from | Rows (demo) |
 | --- | --- | --- |
-| `transactions` | 250,000 | ledger entries with vendor, category, department, account, direction, status, reconciliation status |
-| `vendor_payouts` | ~2,500 | payment runs derived from spend, with pending/failed/on-hold states |
-| `bank_lines` | ~61,500 | bank feed, matched and unmatched |
-| `vendors` | 40 | vendor master with category, country, terms |
-| `chart_of_accounts` | 14 | account codes and types |
-| `data_dictionary` | 38 | field-level documentation, generated from the schema catalog |
+| `v_transactions` | `transaction` + `account` + `bank`, plus derived columns | 250,000 |
+| `v_accounts` | `account` + `bank` | 40 |
 
-Scale up to the 20 M-record test limit and export CSVs:
+### Derived fields, and why
+
+The schema has no counterparty column and no reconciliation column, but both are central to the brief. Rather than invent data, each is derived from real columns with one shared, documented definition in [app/derivations.py](app/derivations.py), and the assistant states the definition in its answer whenever it uses one:
+
+| Field | Definition |
+| --- | --- |
+| `counterparty` | Longest run of capitalised words in `description`, minus rail/bank noise tokens. Spelling variants (`SELECTION MOBILE` / `SELECTIONMOBILE`) are folded onto one canonical name. |
+| `channel` | Rail detected from the narration: UPI / NEFT / IMPS / RTGS / FT / CHEQUE / ACH / ATM / CHARGES. |
+| `reconciliation_status` | `reconciled` when the row carries a `transaction_reference_id` **or** a `utr_number`; `unreconciled` when it carries neither. |
+| `account_number_masked` | `XXXXXX` + last 4 digits. |
+
+On the reference-vs-UTR question the schema doc raises: a bare "reference number" resolves to `transaction_reference_id`, the plaintext searchable column. `utr_number` is used only to decide reconciliation state and is never exposed or queried.
+
+### Demo data
+
+Until the real export is loaded, `scripts/generate_data.py` builds a seeded stand-in **in the official schema**, with narrations that follow the formats in the sample data (`FT - … - SELECTION ELECTRONICS`, `UPI-…`, `NEFT/…/…`, `IMPS/P2A/…`), so the derivations are exercised exactly as they will be on the real thing.
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\generate_data.py --transactions 20000000 --csv
 ```
 
-To swap in the organisers' dataset, load it into DuckDB as the same three views (`v_transactions`, `v_vendor_payouts`, `v_bank_lines`) and adjust `app/schema_catalog.py` to match — nothing else changes.
+### The 30 real sample rows
+
+The schema document ships 10 rows per table of genuine production patterns. The loader reads SQL blocks straight out of the markdown, so they can be loaded without copy-paste:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\load_dataset.py --input "TBX - Database Schema.md" --db data\sample.duckdb
+```
+
+All 10 narrations resolve to a counterparty and a channel, and the one row with neither a reference nor a UTR is correctly flagged unreconciled. `scripts/selftest.py` asserts this every run, so a change to the parsing rules cannot silently regress against the real formats.
 
 ### Loading the provided dataset
 
@@ -131,17 +151,15 @@ To swap in the organisers' dataset, load it into DuckDB as the same three views 
 # 1. import the files and print every table and column you were given
 .\.venv\Scripts\python.exe scripts\load_dataset.py --inspect --input path\to\dataset
 
-# 2. point config\dataset_mapping.yml at those real column names
-#    (each entry is a SQL expression, so CAST / COALESCE / CASE are available
-#     for type and vocabulary normalisation)
+# 2. only if table/column names differ from the schema doc, edit config\dataset_mapping.yml
 
-# 3. import, build the views, and validate them against the schema catalog
+# 3. import, derive, build views, validate
 .\.venv\Scripts\python.exe scripts\load_dataset.py --input path\to\dataset
 ```
 
-Accepts CSV, TSV, Parquet, JSON, Excel or an existing `.duckdb` file. Raw files land as `raw_<filename>` tables; the mapping projects them into the four objects the app depends on (`v_transactions`, `v_vendor_payouts`, `v_bank_lines`, `vendors`).
+Accepts a single file or a folder of them: CSV, TSV, Parquet, JSON, Excel, a `.sql` dump of `CREATE`/`INSERT` statements, a `.md` document with ` ```sql ` blocks, or an existing `.duckdb`.
 
-The validator reports missing fields, empty views, date coverage, and any enum value that is not declared in `app/schema_catalog.py` — so mismatched vocabulary (`OPEN` vs `unreconciled`) is caught before it reaches an answer rather than after. Then update the expected figures in `evals/questions.yaml` and re-run `evals\run_eval.py`.
+The validator reports missing fields, empty views, date coverage, the share of narrations that produced no counterparty, and any enum value not declared in [app/schema_catalog.py](app/schema_catalog.py) — so a vocabulary mismatch is caught before it reaches an answer rather than after. Then update the expected figures in [evals/questions.yaml](evals/questions.yaml) and re-run the benchmark.
 
 ---
 
@@ -152,7 +170,7 @@ The validator reports missing fields, empty views, date coverage, and any enum v
 | `POST /api/ask` | `{question, session_id?}` → answer, breakdown, confidence, explain payload, token usage |
 | `GET /api/export?session_id=…&fmt=csv\|xlsx` | full breakdown for the last answer |
 | `GET /api/health` | dataset stats, model, and whether the LLM is reachable |
-| `GET /api/schema` | datasets, fields and the vendor list |
+| `GET /api/schema` | datasets, fields and the known counterparty list |
 | `POST /api/reset` | clear conversation state |
 
 ---

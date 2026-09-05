@@ -51,7 +51,7 @@ def describe_filters(plan) -> str:
     ds = DATASETS[plan.dataset]
     parts = []
     label = {
-        "direction": {"debit": "money out", "credit": "money in"},
+        "transaction_type": {"debit": "money out", "credit": "money in"},
     }
     for f in plan.filters:
         if f.op == "is_null":
@@ -71,13 +71,14 @@ def describe_filters(plan) -> str:
 
 def metric_label(plan) -> str:
     m = plan.metrics[0]
+    field = m.field.replace("_", " ")
     return {
-        "sum": "total amount",
+        "sum": f"total {field}",
         "count": "number of records",
-        "avg": "average amount",
-        "min": "smallest amount",
-        "max": "largest amount",
-        "count_distinct": f"distinct {m.field}",
+        "avg": f"average {field}",
+        "min": f"smallest {field}",
+        "max": f"largest {field}",
+        "count_distinct": f"distinct {field}",
     }.get(m.agg, m.agg)
 
 
@@ -87,15 +88,16 @@ def deterministic_answer(ex: Execution, pr: PlanResult) -> str:
     ds = DATASETS[plan.dataset]
     where = describe_filters(plan)
     where_txt = f" where {where}" if where else ""
-    period = ex.period_label
+    # a dateless dataset (accounts) has no meaningful period to name
+    period = ex.period_label if ds.date_field else ""
     n = ex.total_records
     primary = plan.metrics[0]
     total = ex.totals.get(primary.name)
 
     if n == 0:
         return (
-            f"I found no {ds.label.lower()} for {period}{where_txt}. "
-            "There is no figure to report for that query, so I am not going to estimate one."
+            f"I found no {ds.label} {('for ' + period) if period else ''}{where_txt}. ".replace("  ", " ")
+            + "There is no figure to report for that query, so I am not going to estimate one."
         )
 
     if plan.intent == "compare" and ex.comparison:
@@ -124,7 +126,7 @@ def deterministic_answer(ex: Execution, pr: PlanResult) -> str:
         shown = len(ex.rows)
         more = f" The {shown} most significant are in the table below." if ex.truncated else ""
         return (
-            f"There are {n:,} {ds.label.lower()} for {period}{where_txt}, "
+            f"There are {n:,} {ds.label}{(' for ' + period) if period else ''}{where_txt}, "
             f"totalling {money(ex.totals.get('sum_' + ds.amount_field, total))}.{more}"
         )
 
@@ -134,16 +136,17 @@ def deterministic_answer(ex: Execution, pr: PlanResult) -> str:
         top = ex.rows[: min(3, len(ex.rows))]
         listed = "; ".join(f"{r.get(g)} {money(r.get(key))}" for r in top)
         return (
-            f"For {period}{where_txt}, {metric_label(plan)} was {money(total)} across {n:,} records. "
+            f"{('For ' + period) if period else 'Across the whole dataset'}{where_txt},"
+            f" {metric_label(plan)} was {money(total)} across {n:,} records. "
             f"Broken down by {g.replace('_', ' ')}, the top entries are: {listed}."
         )
 
     if primary.agg == "count":
-        return f"There are {int(total or n):,} {ds.label.lower()} for {period}{where_txt}."
+        return f"There are {int(total or n):,} {ds.label}{(' for ' + period) if period else ''}{where_txt}."
 
     return (
-        f"For {period}{where_txt}, {metric_label(plan)} was {money(total)}, "
-        f"computed over {n:,} matching records."
+        f"{('For ' + period) if period else 'Across the whole dataset'}{where_txt},"
+        f" {metric_label(plan)} was {money(total)}, computed over {n:,} matching records."
     )
 
 

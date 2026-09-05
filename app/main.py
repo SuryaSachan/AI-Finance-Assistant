@@ -21,14 +21,14 @@ app.add_middleware(
 )
 
 SAMPLE_QUESTIONS = [
-    "How much did we spend on vendor payouts last month?",
+    "How much did we pay out last month?",
     "Which transactions are still unreconciled?",
     "How does that compare to the month before?",
-    "Top 5 vendors by spend this year",
-    "What did we pay Acme Software last quarter?",
-    "Show marketing spend by month year to date",
-    "How many payouts are still pending?",
-    "Any unusually large vendor payouts last month?",
+    "Top 5 counterparties by spend this year",
+    "How much did we pay Tata Capital Limited last quarter?",
+    "Show UPI spend by month year to date",
+    "What is the total balance across HDFC accounts?",
+    "Any unusually large payments last month?",
 ]
 
 
@@ -72,7 +72,7 @@ def schema() -> dict:
             }
             for ds in DATASETS.values()
         ],
-        "vendors": list(db.vendor_names()),
+        "counterparties": list(db.counterparty_names())[:500],
     }
 
 

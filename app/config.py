@@ -41,6 +41,6 @@ ANCHOR_DATE = (os.getenv("ANCHOR_DATE") or "").strip() or None
 MAX_ROWS = _int("MAX_ROWS", 200)
 LLM_ROW_BUDGET = _int("LLM_ROW_BUDGET", 25)
 
-CURRENCY = "USD"
-CURRENCY_SYMBOL = "$"
-COMPANY = "Northwind Analytics Pvt. Ltd."
+CURRENCY = "INR"
+CURRENCY_SYMBOL = "\u20b9"
+COMPANY = "TransBnk demo entity"

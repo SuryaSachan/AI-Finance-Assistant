@@ -3,11 +3,18 @@
 Everything downstream (prompting, plan validation, SQL generation) reads from
 here.  A field that is not listed here can never reach the database, which is
 what makes the SQL layer injection-proof and the answers schema-grounded.
+
+Mapped to the provided schema: `bank` -> `account` -> `transaction`.
+Fields marked DERIVED are computed in `app/derivations.py`, not raw columns.
+Sensitive columns (`account_number`, `utr_number`) are deliberately absent:
+only a masked account number is exposed, and the UTR never leaves the database.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
+
+from .derivations import CHANNELS
 
 FieldKind = Literal["date", "number", "text", "enum", "id"]
 
@@ -27,145 +34,98 @@ class Dataset:
     view: str
     label: str
     desc: str
-    date_field: str
+    date_field: str | None
     amount_field: str
     fields: tuple[Field, ...]
     default_columns: tuple[str, ...] = ()
+    entity_field: str | None = None  # what anomaly detection groups by
 
     @property
     def field_map(self) -> dict[str, Field]:
         return {f.name: f for f in self.fields}
 
 
-TXN_STATUS = ("posted", "pending", "void")
-RECON_STATUS = ("reconciled", "unreconciled", "disputed")
-PAYOUT_STATUS = ("paid", "pending", "failed", "on_hold")
-DIRECTION = ("debit", "credit")
-CATEGORIES = (
-    "Software & SaaS",
-    "Cloud & Hosting",
-    "Professional Services",
-    "Marketing",
-    "Travel",
-    "Facilities",
-    "Logistics",
-    "Hardware",
-    "Payroll Services",
-    "Utilities",
-)
-# revenue rows carry no vendor, so they get their own category value
-TXN_CATEGORIES = CATEGORIES + ("Revenue",)
-DEPARTMENTS = ("Engineering", "Sales", "Marketing", "Finance", "Operations", "HR", "Support")
-PAYMENT_METHODS = ("ACH", "Wire", "Card", "Cheque", "UPI")
+TXN_TYPES = ("credit", "debit")
+RECON_STATUS = ("reconciled", "unreconciled")
+BANK_CODES = ("HDFC", "ICIC", "SBIN", "UTIB", "KKBK", "CNRB", "UBIN", "AUBL", "TMBL", "RATN")
 
 TRANSACTIONS = Dataset(
     key="transactions",
     view="v_transactions",
-    label="Transactions (general ledger)",
-    desc="Every posted/pending ledger entry: spend, revenue, refunds. Use for 'spend', 'expenses', 'transactions', 'reconciliation'.",
-    date_field="txn_date",
+    label="transactions",
+    desc=(
+        "Every credit and debit across all accounts. Use for spend, payouts, receipts, "
+        "counterparty questions and reconciliation."
+    ),
+    date_field="transaction_date",
     amount_field="amount",
+    entity_field="counterparty",
     default_columns=(
-        "txn_id",
-        "txn_date",
-        "vendor_name",
-        "category",
-        "department",
-        "account_name",
+        "transaction_id",
+        "transaction_date",
+        "counterparty",
+        "transaction_type",
         "amount",
-        "status",
+        "channel",
+        "bank_name",
+        "account_number_masked",
         "reconciliation_status",
-    ),
-    fields=(
-        Field("txn_id", "id", "Unique transaction id", groupable=False),
-        Field("txn_date", "date", "Date the transaction occurred"),
-        Field("posted_date", "date", "Date it hit the ledger"),
-        Field("vendor_id", "id", "Vendor id"),
-        Field("vendor_name", "text", "Vendor / counterparty name"),
-        Field("category", "enum", "Spend category", TXN_CATEGORIES),
-        Field("department", "enum", "Owning department", DEPARTMENTS),
-        Field("cost_center", "text", "Cost centre code"),
-        Field("account_code", "text", "Chart-of-accounts code"),
-        Field("account_name", "text", "Chart-of-accounts name"),
-        Field("account_type", "enum", "Account type", ("Expense", "Revenue", "Asset", "Liability")),
-        Field("description", "text", "Free-text memo", groupable=False),
-        Field("invoice_id", "id", "Linked invoice reference", groupable=False),
-        Field("amount", "number", "Signed amount in USD (negative = credit/refund)", groupable=False),
-        Field("direction", "enum", "debit = money out, credit = money in", DIRECTION),
-        Field("payment_method", "enum", "How it was paid", PAYMENT_METHODS),
-        Field("status", "enum", "Ledger status", TXN_STATUS),
-        Field("reconciliation_status", "enum", "Bank reconciliation state", RECON_STATUS),
-        Field("reconciled_date", "date", "Date it was reconciled (null if not)"),
-    ),
-)
-
-VENDOR_PAYOUTS = Dataset(
-    key="vendor_payouts",
-    view="v_vendor_payouts",
-    label="Vendor payouts",
-    desc="Money actually disbursed to vendors (payment runs). Use for 'payouts', 'paid to vendor', 'pending payments'.",
-    date_field="payout_date",
-    amount_field="amount",
-    default_columns=(
-        "payout_id",
-        "payout_date",
-        "vendor_name",
-        "category",
-        "amount",
-        "status",
-        "method",
-        "reconciliation_status",
-    ),
-    fields=(
-        Field("payout_id", "id", "Unique payout id", groupable=False),
-        Field("payout_date", "date", "Date the payout was initiated"),
-        Field("vendor_id", "id", "Vendor id"),
-        Field("vendor_name", "text", "Vendor receiving the payout"),
-        Field("category", "enum", "Vendor category", CATEGORIES),
-        Field("amount", "number", "Payout amount in USD", groupable=False),
-        Field("status", "enum", "Payout status", PAYOUT_STATUS),
-        Field("method", "enum", "Disbursement rail", PAYMENT_METHODS),
-        Field("invoice_count", "number", "Number of invoices settled", groupable=False),
-        Field("reference", "text", "Bank reference", groupable=False),
-        Field("reconciliation_status", "enum", "Bank reconciliation state", RECON_STATUS),
-    ),
-)
-
-BANK_LINES = Dataset(
-    key="bank_lines",
-    view="v_bank_lines",
-    label="Bank statement lines",
-    desc="Raw bank feed lines. Use only for questions about unmatched bank entries / statement vs ledger.",
-    date_field="value_date",
-    amount_field="amount",
-    default_columns=(
-        "bank_line_id",
-        "value_date",
-        "bank_account",
         "description",
-        "amount",
-        "match_status",
-        "matched_txn_id",
     ),
     fields=(
-        Field("bank_line_id", "id", "Bank line id", groupable=False),
-        Field("value_date", "date", "Bank value date"),
-        Field("bank_account", "enum", "Bank account", ("OPERATING-1001", "PAYROLL-2002", "FX-3003")),
-        Field("description", "text", "Bank narration", groupable=False),
-        Field("amount", "number", "Signed bank amount in USD", groupable=False),
-        Field("direction", "enum", "debit = money out, credit = money in", DIRECTION),
-        Field("matched_txn_id", "id", "Ledger transaction it matched to (null if unmatched)", groupable=False),
-        Field("match_status", "enum", "Matching state", ("matched", "unmatched")),
+        Field("transaction_id", "id", "Unique transaction id", groupable=False),
+        Field("transaction_date", "date", "Date the transaction posted"),
+        Field("transaction_type", "enum", "debit = money out, credit = money in", TXN_TYPES),
+        Field("amount", "number", "Transaction amount in INR, always positive", groupable=False),
+        Field("counterparty", "text", "DERIVED: payee/payer name parsed out of the description"),
+        Field("channel", "enum", "DERIVED: payment rail parsed from the description", CHANNELS),
+        Field("description", "text", "Raw bank narration", groupable=False),
+        Field(
+            "reconciliation_status",
+            "enum",
+            "DERIVED: reconciled = has a bank reference or UTR; unreconciled = has neither",
+            RECON_STATUS,
+        ),
+        Field("reference_id", "id", "Bank reference / receipt number (plaintext)", groupable=False),
+        Field("account_id", "id", "Account the transaction belongs to"),
+        Field("account_number_masked", "text", "Account number, last 4 digits only"),
+        Field("entity_id", "id", "Customer entity that owns the account"),
+        Field("program_id", "number", "Product/program the account belongs to"),
+        Field("bank_code", "enum", "Bank IFSC prefix", BANK_CODES),
+        Field("bank_name", "text", "Full bank name"),
     ),
 )
 
-DATASETS: dict[str, Dataset] = {
-    d.key: d for d in (TRANSACTIONS, VENDOR_PAYOUTS, BANK_LINES)
-}
+ACCOUNTS = Dataset(
+    key="accounts",
+    view="v_accounts",
+    label="accounts",
+    desc="One row per account with its current balance. Use for balance questions, not for spend.",
+    date_field=None,
+    amount_field="available_balance",
+    default_columns=(
+        "account_id",
+        "account_number_masked",
+        "bank_name",
+        "program_id",
+        "available_balance",
+        "entity_id",
+    ),
+    fields=(
+        Field("account_id", "id", "Unique account id"),
+        Field("account_number_masked", "text", "Account number, last 4 digits only"),
+        Field("entity_id", "id", "Customer entity that owns the account"),
+        Field("program_id", "number", "Product/program the account belongs to"),
+        Field("available_balance", "number", "Current available balance in INR", groupable=False),
+        Field("bank_code", "enum", "Bank IFSC prefix", BANK_CODES),
+        Field("bank_name", "text", "Full bank name"),
+    ),
+)
+
+DATASETS: dict[str, Dataset] = {d.key: d for d in (TRANSACTIONS, ACCOUNTS)}
 
 AGGREGATIONS = ("sum", "count", "avg", "min", "max", "count_distinct")
 OPERATORS = ("eq", "neq", "in", "not_in", "gt", "gte", "lt", "lte", "between", "contains", "is_null", "not_null")
-
 INTENTS = ("aggregate", "list", "trend", "compare", "anomaly", "clarify", "unsupported")
 
 

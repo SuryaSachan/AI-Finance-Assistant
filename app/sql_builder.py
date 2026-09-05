@@ -81,7 +81,7 @@ def _filter_sql(ds: Dataset, f: Filter, params: list) -> str:
 
 def _where(ds: Dataset, plan: QueryPlan, start: date | None, end: date | None, params: list) -> str:
     clauses: list[str] = []
-    if start and end:
+    if start and end and ds.date_field:
         clauses.append(f'"{ds.date_field}" BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)')
         params.extend([start.isoformat(), end.isoformat()])
     for f in plan.filters:
@@ -102,7 +102,8 @@ def build(plan: QueryPlan, start: date | None, end: date | None) -> tuple[str, l
     if plan.intent == "list":
         cols = ", ".join(f'"{c}"' for c in ds.default_columns)
         where = _where(ds, plan, start, end, params)
-        order = plan.sort.field if plan.sort and plan.sort.field in ds.field_map else ds.date_field
+        default_order = ds.date_field or ds.amount_field
+        order = plan.sort.field if plan.sort and plan.sort.field in ds.field_map else default_order
         direction = plan.sort.dir.upper() if plan.sort else "DESC"
         sql = (
             f"SELECT {cols} FROM {ds.view} WHERE {where} "
@@ -147,7 +148,7 @@ def build_supporting_records(plan: QueryPlan, start: date | None, end: date | No
     params: list = []
     where = _where(ds, plan, start, end, params)
     cols = ", ".join(f'"{c}"' for c in ds.default_columns)
-    order_col = ds.amount_field if ds.amount_field in ds.field_map else ds.date_field
+    order_col = ds.amount_field if ds.amount_field in ds.field_map else (ds.date_field or ds.default_columns[0])
     return (
         f"SELECT {cols} FROM {ds.view} WHERE {where} "
         f'ORDER BY abs("{order_col}") DESC LIMIT {limit}',

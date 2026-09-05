@@ -1,17 +1,16 @@
-"""Load the organisers' dataset into DuckDB and map it onto the assistant's views.
+"""Load the provided dataset into DuckDB and build the assistant's views.
 
     # 1. see what you were given
     python scripts/load_dataset.py --inspect --input path/to/dataset
 
-    # 2. edit config/dataset_mapping.yml to match those column names
+    # 2. if table/column names differ, adjust config/dataset_mapping.yml
 
-    # 3. import + build views + validate
+    # 3. import, derive, build views, validate
     python scripts/load_dataset.py --input path/to/dataset
 
-Accepts .csv, .tsv, .parquet, .xlsx and .json files, plus an existing .duckdb
-file. Raw files are imported as `raw_<filename>` tables; the mapping turns them
-into `v_transactions`, `v_vendor_payouts`, `v_bank_lines` and `vendors`, which
-is the only contract the application depends on.
+Accepts .csv, .tsv, .parquet, .json, .xlsx, a .sql dump of INSERT statements,
+or an existing .duckdb file. Files are imported under their own name, so a file
+called `transaction.csv` becomes the `transaction` table.
 """
 from __future__ import annotations
 
@@ -26,10 +25,12 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from app import views  # noqa: E402
+from app.derivations import RECONCILIATION_DEFINITION  # noqa: E402
 from app.schema_catalog import DATASETS  # noqa: E402
 
 READERS = {
-    ".csv": "read_csv_auto('{p}', sample_size=-1, ignore_errors=false)",
+    ".csv": "read_csv_auto('{p}', sample_size=-1)",
     ".tsv": "read_csv_auto('{p}', delim='\\t', sample_size=-1)",
     ".txt": "read_csv_auto('{p}', sample_size=-1)",
     ".parquet": "read_parquet('{p}')",
@@ -39,36 +40,64 @@ READERS = {
 
 
 def table_name(path: Path) -> str:
-    stem = re.sub(r"[^0-9a-zA-Z_]+", "_", path.stem).strip("_").lower()
-    return f"raw_{stem}"
+    return re.sub(r"[^0-9a-zA-Z_]+", "_", path.stem).strip("_").lower()
 
 
-def import_files(con: duckdb.DuckDBPyConnection, folder: Path) -> list[str]:
+def run_sql_script(con: duckdb.DuckDBPyConnection, script: str, label: str) -> None:
+    """Execute a DDL/INSERT dump, stripping MySQL-only syntax DuckDB rejects."""
+    script = re.sub(r"ENGINE=\w+[^;]*", "", script, flags=re.I)
+    script = re.sub(r"\bENUM\s*\([^)]*\)", "VARCHAR", script, flags=re.I)
+    script = re.sub(r"\bTIMESTAMP\(\d\)", "TIMESTAMP", script, flags=re.I)
+    script = re.sub(r"\bAUTO_INCREMENT\b", "", script, flags=re.I)
+    script = re.sub(r"DEFAULT CHARSET=\S+", "", script, flags=re.I)
+    for statement in [s.strip() for s in script.split(";") if s.strip()]:
+        try:
+            con.execute(statement)
+        except Exception as exc:  # noqa: BLE001
+            print(f"    skipped statement in {label}: {str(exc).splitlines()[0]}")
+
+
+def import_file(con: duckdb.DuckDBPyConnection, path: Path) -> list[str]:
+    suffix = path.suffix.lower()
+    name = table_name(path)
+    posix = path.as_posix().replace("'", "''")
     imported: list[str] = []
-    for path in sorted(folder.rglob("*")):
-        if not path.is_file():
-            continue
-        suffix = path.suffix.lower()
-        name = table_name(path)
-        posix = path.as_posix().replace("'", "''")
-        if suffix in READERS:
-            con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM {READERS[suffix].format(p=posix)}")
-        elif suffix in (".xlsx", ".xls"):
-            import pandas as pd
 
-            sheets = pd.read_excel(path, sheet_name=None)
-            for sheet, df in sheets.items():
-                sheet_name = re.sub(r"[^0-9a-zA-Z_]+", "_", sheet).strip("_").lower()
-                full = name if len(sheets) == 1 else f"{name}_{sheet_name}"
-                con.register("tmp_df", df)
-                con.execute(f"CREATE OR REPLACE TABLE {full} AS SELECT * FROM tmp_df")
-                con.unregister("tmp_df")
-                imported.append(full)
-            continue
-        else:
-            continue
+    if suffix in READERS:
+        con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM {READERS[suffix].format(p=posix)}")
         imported.append(name)
+    elif suffix in (".xlsx", ".xls"):
+        import pandas as pd
+
+        sheets = pd.read_excel(path, sheet_name=None)
+        for sheet, df in sheets.items():
+            sheet_name = re.sub(r"[^0-9a-zA-Z_]+", "_", sheet).strip("_").lower()
+            full = name if len(sheets) == 1 else f"{name}_{sheet_name}"
+            con.register("tmp_df", df)
+            con.execute(f"CREATE OR REPLACE TABLE {full} AS SELECT * FROM tmp_df")
+            con.unregister("tmp_df")
+            imported.append(full)
+    elif suffix == ".sql":
+        run_sql_script(con, path.read_text(encoding="utf-8", errors="replace"), path.name)
+        imported.extend(r[0] for r in con.execute("SHOW TABLES").fetchall())
+    elif suffix in (".md", ".markdown"):
+        # the schema document carries the DDL and the sample INSERTs in ```sql fences
+        text = path.read_text(encoding="utf-8", errors="replace")
+        blocks = re.findall(r"```sql\s*\n(.*?)```", text, re.S | re.I)
+        if not blocks:
+            print(f"    no ```sql blocks found in {path.name}")
+        for block in blocks:
+            run_sql_script(con, block, path.name)
+        imported.extend(r[0] for r in con.execute("SHOW TABLES").fetchall())
     return imported
+
+
+def import_files(con: duckdb.DuckDBPyConnection, source: Path) -> list[str]:
+    paths = [source] if source.is_file() else [p for p in sorted(source.rglob("*")) if p.is_file()]
+    imported: list[str] = []
+    for path in paths:
+        imported.extend(import_file(con, path))
+    return sorted(set(imported))
 
 
 def describe(con: duckdb.DuckDBPyConnection, tables: list[str]) -> None:
@@ -78,23 +107,6 @@ def describe(con: duckdb.DuckDBPyConnection, tables: list[str]) -> None:
         print(f"\n{t}  ({rows:,} rows)")
         for name, dtype, *_ in cols:
             print(f"    {name:<32} {dtype}")
-
-
-def build_views(con: duckdb.DuckDBPyConnection, mapping: dict) -> list[str]:
-    warnings: list[str] = []
-    for view, spec in mapping.items():
-        fields = spec.get("fields") or {}
-        select = ", ".join(
-            f'{expr if expr else "NULL"} AS "{name}"' for name, expr in fields.items()
-        )
-        sql = f"CREATE OR REPLACE VIEW {view} AS SELECT {select} FROM {spec['from']}"
-        try:
-            con.execute(sql)
-            print(f"  built {view}")
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"{view}: {exc}")
-            print(f"  FAILED {view}: {str(exc).splitlines()[0]}")
-    return warnings
 
 
 def validate(con: duckdb.DuckDBPyConnection) -> list[str]:
@@ -112,10 +124,13 @@ def validate(con: duckdb.DuckDBPyConnection) -> list[str]:
             problems.append(f"{ds.view} is missing fields: {', '.join(missing)}")
 
         rows = con.execute(f"SELECT count(*) FROM {ds.view}").fetchone()[0]
-        span = con.execute(
-            f'SELECT min("{ds.date_field}"), max("{ds.date_field}") FROM {ds.view}'
-        ).fetchone()
-        print(f"\n{ds.view}: {rows:,} rows, {ds.date_field} {span[0]} .. {span[1]}")
+        if ds.date_field:
+            span = con.execute(
+                f'SELECT min("{ds.date_field}"), max("{ds.date_field}") FROM {ds.view}'
+            ).fetchone()
+            print(f"\n{ds.view}: {rows:,} rows, {ds.date_field} {span[0]} .. {span[1]}")
+        else:
+            print(f"\n{ds.view}: {rows:,} rows")
         if rows == 0:
             problems.append(f"{ds.view} is empty")
 
@@ -124,7 +139,7 @@ def validate(con: duckdb.DuckDBPyConnection) -> list[str]:
                 continue
             actual = [
                 r[0] for r in con.execute(
-                    f'SELECT DISTINCT "{f.name}" FROM {ds.view} WHERE "{f.name}" IS NOT NULL LIMIT 40'
+                    f'SELECT DISTINCT "{f.name}" FROM {ds.view} WHERE "{f.name}" IS NOT NULL LIMIT 60'
                 ).fetchall()
             ]
             unexpected = [v for v in actual if v not in f.values]
@@ -132,22 +147,32 @@ def validate(con: duckdb.DuckDBPyConnection) -> list[str]:
             if unexpected:
                 problems.append(
                     f"{ds.view}.{f.name} has values not in schema_catalog: {unexpected[:8]} "
-                    f"-> either normalise them in the mapping or add them to schema_catalog.py"
+                    f"-> normalise them in app/derivations.py or add them to app/schema_catalog.py"
                 )
 
-    try:
-        vendors = con.execute("SELECT count(*) FROM vendors").fetchone()[0]
-        print(f"\nvendors: {vendors:,} rows")
-        if vendors == 0:
-            problems.append("vendors is empty - entity resolution and refusals need it")
-    except Exception as exc:  # noqa: BLE001
-        problems.append(f"vendors table/view missing ({str(exc).splitlines()[0]})")
+    cp = con.execute("SELECT count(*) FROM counterparties").fetchone()[0]
+    unknown = con.execute(
+        "SELECT round(100.0 * sum(CASE WHEN counterparty = 'UNIDENTIFIED' THEN 1 ELSE 0 END) / count(*), 1) "
+        "FROM txn_enriched"
+    ).fetchone()[0]
+    print(f"\ncounterparties: {cp:,} distinct, {unknown}% of transactions unidentified")
+    if cp == 0:
+        problems.append("no counterparties were parsed out of the descriptions")
+    if unknown is not None and unknown > 40:
+        problems.append(
+            f"{unknown}% of narrations produced no counterparty - the parsing rules in "
+            f"app/derivations.py probably need a pattern for this export's format"
+        )
+
+    top = con.execute("SELECT counterparty, txn_count FROM counterparties LIMIT 8").fetchall()
+    for name, n in top:
+        print(f"    {name:<40} {n:>10,}")
     return problems
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True, help="folder of data files, or an existing .duckdb")
+    ap.add_argument("--input", required=True, help="data file, folder of data files, .sql/.md dump, or an existing .duckdb")
     ap.add_argument("--db", default=str(ROOT / "data" / "finance.duckdb"))
     ap.add_argument("--mapping", default=str(ROOT / "config" / "dataset_mapping.yml"))
     ap.add_argument("--inspect", action="store_true", help="import and print schemas, do not build views")
@@ -162,28 +187,34 @@ def main() -> int:
         con = duckdb.connect(str(source))
         tables = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
     else:
-        if not source.is_dir():
-            print(f"{source} is not a folder or .duckdb file")
+        if not source.exists():
+            print(f"{source} does not exist")
             return 2
         con = duckdb.connect(str(db_path))
         print(f"Importing {source} -> {db_path}")
         tables = import_files(con, source)
         if not tables:
-            print("No readable data files found (.csv/.tsv/.parquet/.json/.xlsx)")
+            print("No readable data found (.csv/.tsv/.parquet/.json/.xlsx/.sql/.md)")
             return 2
         print(f"Imported {len(tables)} table(s): {', '.join(tables)}")
 
     describe(con, tables)
 
     if args.inspect:
-        print("\nInspect only. Now edit the mapping to match these columns:")
-        print(f"  {args.mapping}")
+        print(f"\nInspect only. If these names differ from the schema doc, edit:\n  {args.mapping}")
         con.close()
         return 0
 
-    mapping = yaml.safe_load(Path(args.mapping).read_text(encoding="utf-8"))
-    print("\nBuilding views:")
-    build_views(con, mapping)
+    overrides = yaml.safe_load(Path(args.mapping).read_text(encoding="utf-8")) or {}
+    print("\nDeriving counterparty / channel / reconciliation and building views ...")
+    print(f"  reconciliation rule: {RECONCILIATION_DEFINITION}")
+    try:
+        views.build(con, overrides)
+    except Exception as exc:  # noqa: BLE001
+        print(f"\nFAILED to build views: {str(exc).splitlines()[0]}")
+        print(f"Check the table/column names in {args.mapping}")
+        con.close()
+        return 1
 
     print("\nValidating against schema_catalog:")
     problems = validate(con)
@@ -193,11 +224,10 @@ def main() -> int:
         print("\nISSUES TO FIX:")
         for p in problems:
             print(f"  - {p}")
-        print("\nFix the mapping expressions (or schema_catalog.py enums) and re-run.")
         return 1
 
     print("\nDataset is ready. Next:")
-    print("  python evals/run_eval.py --no-llm     # re-point questions.yaml at the real figures first")
+    print("  python evals/run_eval.py --no-llm    # update questions.yaml for the real data first")
     print("  python -m uvicorn app.main:app --reload")
     return 0
 
